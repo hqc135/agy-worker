@@ -31,7 +31,7 @@ if ($parseErrors.Count -gt 0) {
 }
 
 $skillText = Get-Content -Raw -LiteralPath (Join-Path $repoRoot 'SKILL.md')
-if ($skillText -notmatch '(?m)^name: agy-worker$') {
+if ($skillText -notmatch '(?m)^name: agy-worker\r?$') {
     throw 'SKILL.md does not declare name: agy-worker.'
 }
 if ($skillText -match '\bTODO\b|\[TODO') {
