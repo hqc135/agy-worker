@@ -1,0 +1,7 @@
+interface:
+  display_name: "AGY Worker"
+  short_description: "Delegate verifiable coding chores to Antigravity"
+  default_prompt: "Use $agy-worker to delegate this bounded coding chore to official Antigravity, then verify the result."
+
+policy:
+  allow_implicit_invocation: true
