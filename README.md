@@ -23,10 +23,11 @@ The important part is the review boundary. Antigravity's prose is never treated 
 - Uses the official `agy` CLI and its cached Google authentication.
 - Defaults to `gemini-3.7-flash-medium`; any model slug reported by `agy models` can be selected.
 - Supports edit mode and read-only planning mode.
-- Returns machine-readable JSON and preserves `agy`'s exit code.
+- Returns machine-readable JSON; a non-zero `agy` result raises a clear PowerShell error without terminating the caller's host process.
 - Supports exact continuation with `conversation_id`.
 - Separates stdout JSON from stderr diagnostics.
 - Automatically inherits the current Windows manual proxy when terminal proxy variables are absent.
+- Adds an existing Windows Node.js installation to the child PATH when an Antigravity plugin hook requires `node` but the host PATH omits it.
 - Supports an explicit proxy, custom `agy` path, sandbox mode, and reasoning effort.
 - Keeps unrestricted permissions opt-in.
 - Includes static CI validation for Windows PowerShell 5.1 and PowerShell 7.
@@ -294,6 +295,10 @@ Run `agy models` and pass an exact current slug. Headless mode fails rather than
 ### A command was soft-denied
 
 Let Codex run the verification command, add a narrow Antigravity permission rule, or explicitly authorize `-AllowAllTools` for that run.
+
+### Every file tool fails in a `PreToolUse` hook because `node` is not found
+
+The wrapper now discovers common Windows Node.js installations and temporarily adds one to the child PATH. If the failing hook belongs to an unused Antigravity/Gemini plugin, disable or uninstall that plugin in its own configuration rather than enabling unrestricted tool permissions. A hook failure is unrelated to the selected Gemini model.
 
 ### `SUCCESS` with an empty response
 

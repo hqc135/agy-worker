@@ -30,6 +30,17 @@ if ($parseErrors.Count -gt 0) {
     throw "PowerShell parse errors:`n$($messages -join [Environment]::NewLine)"
 }
 
+$wrapperText = Get-Content -Raw -LiteralPath $wrapperPath
+if ($wrapperText -match '(?m)^\s*exit\s+\$agyExitCode\s*$') {
+    throw 'The wrapper must not terminate its PowerShell host with exit $agyExitCode.'
+}
+if ($wrapperText -notmatch "nodejs\\node\.exe") {
+    throw 'The wrapper must preserve automatic Node.js discovery for child hooks.'
+}
+if ($wrapperText -notmatch "ProxyEnable" -or $wrapperText -notmatch "ProxyServer") {
+    throw 'The wrapper must preserve Windows system-proxy discovery.'
+}
+
 $skillText = Get-Content -Raw -LiteralPath (Join-Path $repoRoot 'SKILL.md')
 if ($skillText -notmatch '(?m)^name: agy-worker\r?$') {
     throw 'SKILL.md does not declare name: agy-worker.'

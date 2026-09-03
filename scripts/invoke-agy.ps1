@@ -81,6 +81,27 @@ if ($AllowAllTools) {
 }
 $agyArguments += @('--print', $Prompt)
 
+$runningOnWindows = [System.Environment]::OSVersion.Platform -eq [System.PlatformID]::Win32NT
+$originalPathValue = [Environment]::GetEnvironmentVariable('PATH', 'Process')
+$pathWasInjected = $false
+if ($runningOnWindows -and -not (Get-Command node -CommandType Application -ErrorAction SilentlyContinue)) {
+    $nodeCandidates = @(
+        $(if ($env:ProgramFiles) { Join-Path $env:ProgramFiles 'nodejs\node.exe' }),
+        $(if (${env:ProgramFiles(x86)}) { Join-Path ${env:ProgramFiles(x86)} 'nodejs\node.exe' }),
+        $(if ($env:LOCALAPPDATA) { Join-Path $env:LOCALAPPDATA 'Programs\nodejs\node.exe' }),
+        $(if ($env:USERPROFILE) { Join-Path $env:USERPROFILE '.cache\codex-runtimes\codex-primary-runtime\dependencies\node\bin\node.exe' })
+    ) | Where-Object { $_ }
+
+    foreach ($nodeCandidate in $nodeCandidates) {
+        if (Test-Path -LiteralPath $nodeCandidate -PathType Leaf) {
+            $nodeDirectory = Split-Path -Parent $nodeCandidate
+            $env:PATH = "$nodeDirectory$([IO.Path]::PathSeparator)$env:PATH"
+            $pathWasInjected = $true
+            break
+        }
+    }
+}
+
 $originalProxyValues = @{}
 $proxyWasInjected = $false
 foreach ($proxyName in @('HTTP_PROXY', 'HTTPS_PROXY', 'ALL_PROXY')) {
@@ -88,7 +109,6 @@ foreach ($proxyName in @('HTTP_PROXY', 'HTTPS_PROXY', 'ALL_PROXY')) {
 }
 
 $effectiveProxyUrl = $ProxyUrl
-$runningOnWindows = [System.Environment]::OSVersion.Platform -eq [System.PlatformID]::Win32NT
 if (-not $effectiveProxyUrl -and -not $NoSystemProxy -and -not $env:HTTP_PROXY -and -not $env:HTTPS_PROXY -and -not $env:ALL_PROXY -and $runningOnWindows) {
     $internetSettings = Get-ItemProperty -LiteralPath 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Internet Settings' -ErrorAction SilentlyContinue
     if ($internetSettings -and $internetSettings.ProxyEnable -eq 1 -and $internetSettings.ProxyServer) {
@@ -146,6 +166,9 @@ try {
             }
         }
     }
+    if ($pathWasInjected) {
+        [Environment]::SetEnvironmentVariable('PATH', $originalPathValue, 'Process')
+    }
 }
 
 if ($stderrText) {
@@ -172,5 +195,8 @@ if ($result.status -eq 'SUCCESS' -and [string]::IsNullOrWhiteSpace([string]$resu
     [Console]::Error.WriteLine('Warning: agy reported SUCCESS with an empty response. Inspect workspace changes before retrying.')
 }
 
+if ($agyExitCode -ne 0) {
+    throw "agy exited with code $agyExitCode."
+}
+
 $result | ConvertTo-Json -Depth 100
-exit $agyExitCode

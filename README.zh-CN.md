@@ -23,10 +23,11 @@
 - 调用官方 `agy` CLI，使用其已缓存的 Google 登录状态。
 - 默认使用 `gemini-3.7-flash-medium`，也可选择 `agy models` 返回的其他模型 slug。
 - 支持可编辑模式和只读规划模式。
-- 返回机器可读 JSON，并保留 `agy` 的退出码。
+- 返回机器可读 JSON；`agy` 非零退出时抛出清晰的 PowerShell 异常，但不会用 `exit` 终止调用方的宿主进程。
 - 支持使用 `conversation_id` 精确续接任务。
 - 分离 stdout JSON 与 stderr 诊断、权限提示。
 - 终端没有代理变量时，可自动继承 Windows 当前手动代理。
+- Antigravity 插件钩子需要 `node`、但宿主 PATH 未包含它时，会自动查找常见 Windows Node.js 安装并临时加入子进程 PATH。
 - 支持显式代理、自定义 `agy` 路径、沙箱和 reasoning effort。
 - 全工具权限默认关闭，必须显式开启。
 - GitHub Actions 同时校验 Windows PowerShell 5.1 与 PowerShell 7。
@@ -296,6 +297,10 @@ agy models
 ### 命令被软拒绝
 
 可以让 Codex 自己运行验收命令、增加窄范围 Antigravity 权限规则，或对本次调用显式授权 `-AllowAllTools`。
+
+### 所有文件工具都因 `PreToolUse` 钩子找不到 `node` 而失败
+
+包装脚本现在会查找常见的 Windows Node.js 安装，并只在子进程期间临时补入 PATH。如果失败钩子来自你不用的 Antigravity/Gemini 插件，应在该插件自己的配置中禁用或卸载它，而不是开启不受限工具权限。这个错误与所选 Gemini 模型无关。
 
 ### 状态是 `SUCCESS`，但 response 为空
 
