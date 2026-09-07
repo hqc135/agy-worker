@@ -1,6 +1,6 @@
 [CmdletBinding()]
 param(
-    [string]$Model = 'gemini-3.7-flash-medium'
+    [string]$Model = 'gemini-3.8-flash-high'
 )
 
 Set-StrictMode -Version Latest

@@ -9,6 +9,12 @@ $requiredFiles = @(
     'SKILL.md',
     'agents/openai.yaml',
     'scripts/invoke-agy.ps1',
+    'scripts/invoke-agy-task.mjs',
+    'scripts/record-review.mjs',
+    'scripts/test-regression.mjs',
+    'references/task-contract.schema.json',
+    'references/worker-manifest.schema.json',
+    'references/task-types.md',
     'README.md',
     'README.zh-CN.md',
     'LICENSE'
@@ -52,6 +58,21 @@ if ($skillText -match '\bTODO\b|\[TODO') {
 $openAiYaml = Get-Content -Raw -LiteralPath (Join-Path $repoRoot 'agents/openai.yaml')
 if ($openAiYaml -notmatch '\$agy-worker') {
     throw 'agents/openai.yaml default prompt must mention $agy-worker.'
+}
+
+foreach ($schemaName in @('task-contract.schema.json', 'worker-manifest.schema.json')) {
+    $schemaPath = Join-Path $repoRoot "references/$schemaName"
+    Get-Content -Raw -LiteralPath $schemaPath | ConvertFrom-Json | Out-Null
+}
+
+$node = Get-Command node -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
+if ($node) {
+    foreach ($scriptName in @('invoke-agy-task.mjs', 'record-review.mjs', 'test-regression.mjs')) {
+        & $node.Path --check (Join-Path $repoRoot "scripts/$scriptName")
+        if ($LASTEXITCODE -ne 0) {
+            throw "Node syntax validation failed: scripts/$scriptName"
+        }
+    }
 }
 
 'Static validation passed.'

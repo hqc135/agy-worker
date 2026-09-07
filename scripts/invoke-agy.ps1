@@ -7,7 +7,7 @@ param(
     [string]$Workspace = (Get-Location).Path,
 
     [ValidatePattern('^[a-z0-9][a-z0-9._-]*$')]
-    [string]$Model = 'gemini-3.7-flash-medium',
+    [string]$Model = 'gemini-3.8-flash-high',
 
     [ValidateSet('accept-edits', 'plan')]
     [string]$Mode = 'accept-edits',
@@ -20,6 +20,8 @@ param(
 
     [string]$ConversationId,
 
+    [string]$JsonSchema,
+
     [string]$AgyPath,
 
     [ValidatePattern('^https?://')]
@@ -29,6 +31,12 @@ param(
 
     [switch]$Sandbox,
 
+    # This installation defaults to unrestricted Antigravity tool execution at
+    # the owner's explicit request. Use -RestrictTools for sensitive tasks.
+    [switch]$RestrictTools,
+
+    # Retained for compatibility with existing callers; unrestricted execution
+    # is already the default.
     [switch]$AllowAllTools
 )
 
@@ -67,16 +75,27 @@ $agyArguments = @(
     '--print-timeout', $Timeout
 )
 
+$resolvedJsonSchema = $null
+if ($JsonSchema) {
+    $resolvedJsonSchema = (Resolve-Path -LiteralPath $JsonSchema).Path
+    if (-not (Test-Path -LiteralPath $resolvedJsonSchema -PathType Leaf)) {
+        throw "JSON schema file was not found: $resolvedJsonSchema"
+    }
+}
+
 if ($Effort) {
     $agyArguments += @('--effort', $Effort)
 }
 if ($ConversationId) {
     $agyArguments += @('--conversation', $ConversationId)
 }
+if ($resolvedJsonSchema) {
+    $agyArguments += @('--json-schema', $resolvedJsonSchema)
+}
 if ($Sandbox) {
     $agyArguments += '--sandbox'
 }
-if ($AllowAllTools) {
+if (-not $RestrictTools) {
     $agyArguments += '--dangerously-skip-permissions'
 }
 $agyArguments += @('--print', $Prompt)

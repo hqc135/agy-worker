@@ -1,0 +1,127 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "AgyTaskContractV1",
+  "description": "Schema for Antigravity V1 Task Contract",
+  "type": "object",
+  "properties": {
+    "version": {
+      "type": "string",
+      "enum": ["v1"],
+      "description": "Protocol version, must be 'v1'"
+    },
+    "task_id": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^[a-zA-Z0-9_-]+$",
+      "description": "Unique identifier for this task"
+    },
+    "task_type": {
+      "type": "string",
+      "enum": [
+        "implementation",
+        "test_generation",
+        "mechanical_edit",
+        "documentation",
+        "investigation"
+      ],
+      "description": "Discriminating task category"
+    },
+    "goal": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Clear and self-contained objective for the worker"
+    },
+    "workspace": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Path to target workspace directory"
+    },
+    "allowed_files": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 },
+      "description": "List of files or paths the worker is permitted to modify"
+    },
+    "read_scope": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 },
+      "description": "Files or directories the worker should reference"
+    },
+    "acceptance_commands": {
+      "type": "array",
+      "items": {
+        "oneOf": [
+          { "type": "string", "minLength": 1 },
+          {
+            "type": "object",
+            "properties": {
+              "executable": { "type": "string", "minLength": 1 },
+              "args": { "type": "array", "items": { "type": "string" } },
+              "timeout": { "type": "string", "pattern": "^(\\d+(\\.\\d+)?(ns|us|µs|ms|s|m|h))+$" }
+            },
+            "required": ["executable", "args"],
+            "additionalProperties": false
+          }
+        ]
+      },
+      "description": "Commands independently executed after worker run; structured executable/args form is preferred"
+    },
+    "forbidden_actions": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 },
+      "description": "List of actions the worker must not perform"
+    },
+    "max_changed_files": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Maximum number of files permitted to be changed"
+    },
+    "artifact_dir": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Dedicated strict descendant directory inside workspace for artifacts, logs, and evidence; may not equal workspace or be inside .git"
+    },
+    "return_mode": {
+      "type": "string",
+      "enum": ["compact"],
+      "description": "Worker output mode; must be 'compact'"
+    },
+    "model": {
+      "type": "string",
+      "description": "Optional model override"
+    },
+    "mode": {
+      "type": "string",
+      "enum": ["accept-edits", "plan"],
+      "description": "Optional execution mode override"
+    },
+    "timeout": {
+      "type": "string",
+      "pattern": "^(\\d+(\\.\\d+)?(ns|us|µs|ms|s|m|h))+$",
+      "description": "Optional timeout duration string (e.g. 15m)"
+    },
+    "acceptance_timeout": {
+      "type": "string",
+      "pattern": "^(\\d+(\\.\\d+)?(ns|us|µs|ms|s|m|h))+$",
+      "description": "Default timeout for each acceptance command (default 5m)"
+    },
+    "conversation_id": {
+      "type": "string",
+      "description": "Optional conversation ID to resume for precise retry"
+    }
+  },
+  "required": [
+    "version",
+    "task_id",
+    "task_type",
+    "goal",
+    "workspace",
+    "allowed_files",
+    "read_scope",
+    "acceptance_commands",
+    "forbidden_actions",
+    "max_changed_files",
+    "artifact_dir",
+    "return_mode"
+  ],
+  "additionalProperties": false
+}

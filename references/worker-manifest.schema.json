@@ -1,0 +1,52 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "AgyWorkerManifestV1",
+  "description": "Schema for Antigravity V1 Worker Manifest returned by Gemini",
+  "type": "object",
+  "properties": {
+    "status": {
+      "type": "string",
+      "enum": ["completed", "blocked", "failed"],
+      "description": "Worker execution outcome"
+    },
+    "summary": {
+      "type": "string",
+      "maxLength": 600,
+      "description": "Compact summary of changes made and outcome (max 600 chars)"
+    },
+    "changed_files": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Files modified or created by the worker (untrusted, verified by machine)"
+    },
+    "commands_run": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Commands run by worker during execution"
+    },
+    "artifacts": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Artifact files created in artifact_dir"
+    },
+    "uncertainties": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "List of assumptions, unresolved items, or uncertainties"
+    },
+    "needs_review": {
+      "type": "boolean",
+      "description": "Whether human or supervisor review is required"
+    }
+  },
+  "required": [
+    "status",
+    "summary",
+    "changed_files",
+    "commands_run",
+    "artifacts",
+    "uncertainties",
+    "needs_review"
+  ],
+  "additionalProperties": false
+}

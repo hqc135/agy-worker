@@ -21,7 +21,8 @@ The important part is the review boundary. Antigravity's prose is never treated 
 ## Features
 
 - Uses the official `agy` CLI and its cached Google authentication.
-- Defaults to `gemini-3.7-flash-medium`; any model slug reported by `agy models` can be selected.
+- Defaults to `gemini-3.8-flash-high`; any model slug reported by `agy models` can be selected.
+- Provides a versioned task-contract runner with machine-enforced file scope, independent acceptance commands, per-attempt evidence, compact receipts, and review telemetry.
 - Supports edit mode and read-only planning mode.
 - Returns machine-readable JSON; a non-zero `agy` result raises a clear PowerShell error without terminating the caller's host process.
 - Supports exact continuation with `conversation_id`.
@@ -29,15 +30,15 @@ The important part is the review boundary. Antigravity's prose is never treated 
 - Automatically inherits the current Windows manual proxy when terminal proxy variables are absent.
 - Adds an existing Windows Node.js installation to the child PATH when an Antigravity plugin hook requires `node` but the host PATH omits it.
 - Supports an explicit proxy, custom `agy` path, sandbox mode, and reasoning effort.
-- Keeps unrestricted permissions opt-in.
+- Uses unrestricted Antigravity tools by default for this personal-worker workflow; `-RestrictTools` opts back into approval restrictions.
 - Includes static CI validation for Windows PowerShell 5.1 and PowerShell 7.
 
 ## Tested environment
 
 - Windows 11
-- Antigravity CLI 1.1.24
+- Antigravity CLI 1.1.26
 - Codex desktop/CLI skill discovery
-- `gemini-3.7-flash-medium`
+- `gemini-3.8-flash-high`
 - Windows PowerShell 5.1 and PowerShell 7 syntax
 
 Other platforms should work when `pwsh` and `agy` are on `PATH`, but automatic system-proxy discovery is Windows-specific and non-Windows platforms are not yet tested in CI.
@@ -163,6 +164,68 @@ Poor tasks:
 - large architectural changes;
 - changes that cannot be tested or reviewed locally;
 - overlapping edits from multiple agents in the same files.
+- browser or website interaction: local testing found Antigravity CLI's Browser Navigator slow and nondeterministic, so those tasks should stay with Codex.
+
+## Recommended: V1 task-contract runner
+
+The free-prompt wrapper remains available, but normal delegated work should use `scripts/invoke-agy-task.mjs`. A contract makes the scope and acceptance checks explicit and gives Codex a small receipt instead of feeding the worker's full response back into the main context.
+
+```json
+{
+  "version": "v1",
+  "task_id": "parser-tests-001",
+  "task_type": "test_generation",
+  "goal": "Add tests for empty and malformed parser input",
+  "workspace": "C:/path/to/project",
+  "allowed_files": ["tests/parser.test.ts"],
+  "read_scope": ["src/parser.ts", "tests/parser.test.ts"],
+  "acceptance_commands": [
+    {
+      "executable": "npm",
+      "args": ["test", "--", "tests/parser.test.ts"],
+      "timeout": "5m"
+    }
+  ],
+  "forbidden_actions": ["modifying files outside allowed_files"],
+  "max_changed_files": 1,
+  "artifact_dir": "C:/path/to/project/.agy-artifacts/parser-tests-001",
+  "return_mode": "compact",
+  "model": "gemini-3.8-flash-high",
+  "mode": "accept-edits"
+}
+```
+
+Run it from Codex or a terminal:
+
+```powershell
+node "$HOME/.agents/skills/agy-worker/scripts/invoke-agy-task.mjs" `
+  --contract "C:/path/to/contract.json"
+```
+
+Supported task types are `implementation`, `test_generation`, `mechanical_edit`, `documentation`, and `investigation`. Browser tasks are intentionally rejected.
+
+The runner:
+
+- snapshots Git-visible and ignored files before and after the worker and acceptance commands;
+- rejects changes outside `allowed_files`, excessive file counts, Git history mutation, and acceptance failures;
+- downgrades ambiguous states such as pre-existing dirty files or incomplete snapshots to `NEEDS_REVIEW`;
+- stores raw output, command logs, manifests, and full receipts in a unique `attempt-*` directory;
+- keeps previous attempts and updates `latest.json` to the newest receipt;
+- emits a compact JSON receipt capped at 16 KiB;
+- supports exact continuation by putting a prior `conversation_id` in the next contract.
+
+`allowed_files` is machine-checked, but `read_scope` and free-form `forbidden_actions` are instructions rather than an OS sandbox. Codex must still inspect the diff and decide whether the result is correct.
+
+After semantic review, record the outcome:
+
+```powershell
+node "$HOME/.agents/skills/agy-worker/scripts/record-review.mjs" `
+  --task-id "parser-tests-001" `
+  --verdict pass `
+  --notes "Diff and focused tests verified"
+```
+
+Valid verdicts are `pass`, `retry`, and `takeover`.
 
 ## Direct wrapper usage
 
@@ -196,7 +259,7 @@ Use another model and a longer timeout:
 agy models
 
 & "$HOME/.agents/skills/agy-worker/scripts/invoke-agy.ps1" `
-  -Model "gemini-3.7-flash-high" `
+  -Model "gemini-3.8-flash-high" `
   -Effort high `
   -Timeout 30m `
   -Prompt $prompt
@@ -218,7 +281,7 @@ The wrapper rejects a continuation response whose returned `conversation_id` doe
 |---|---:|---|
 | `-Prompt` | required | Task sent to Antigravity. |
 | `-Workspace` | current directory | Working directory and `--add-dir` scope. |
-| `-Model` | `gemini-3.7-flash-medium` | Exact slug from `agy models`. |
+| `-Model` | `gemini-3.8-flash-high` | Exact slug from `agy models`. |
 | `-Mode` | `accept-edits` | `accept-edits` or `plan`. |
 | `-Effort` | unset | Optional `low`, `medium`, or `high`. |
 | `-Timeout` | `15m` | Go-style duration such as `90s`, `15m`, or `1h30m`. |
@@ -227,11 +290,12 @@ The wrapper rejects a continuation response whose returned `conversation_id` doe
 | `-ProxyUrl` | auto-detected | HTTP/HTTPS proxy for the child process only. |
 | `-NoSystemProxy` | off | Disable Windows manual-proxy discovery. |
 | `-Sandbox` | off | Enable Antigravity terminal sandbox restrictions. |
-| `-AllowAllTools` | off | Pass `--dangerously-skip-permissions`. |
+| `-RestrictTools` | off | Disable the default `--dangerously-skip-permissions` behavior. |
+| `-AllowAllTools` | compatibility | Retained for older callers; unrestricted tools are already the default. |
 
 ## Permissions
 
-In headless mode, workspace file reads and writes are normally allowed. Commands that require approval are soft-denied unless they are allowed in Antigravity settings. Prefer scoped permissions in `~/.gemini/antigravity-cli/settings.json`, for example:
+This personal-worker configuration passes `--dangerously-skip-permissions` by default. Use it only in a trusted workspace with a tightly scoped contract. Pass `-RestrictTools` when working with sensitive or unfamiliar code. Antigravity also supports scoped permissions in `~/.gemini/antigravity-cli/settings.json`, for example:
 
 ```json
 {
@@ -245,15 +309,15 @@ In headless mode, workspace file reads and writes are normally allowed. Commands
 }
 ```
 
-Use `-AllowAllTools` only for a trusted prompt in a trusted workspace:
+To explicitly select the restricted route:
 
 ```powershell
 & "$HOME/.agents/skills/agy-worker/scripts/invoke-agy.ps1" `
-  -AllowAllTools `
+  -RestrictTools `
   -Prompt $prompt
 ```
 
-That switch allows all Antigravity tool calls, including file writes and command execution. It is not required merely to edit files in the active workspace. See the [official headless-mode documentation](https://antigravity.google/docs/cli/headless/) and [permissions guide](https://antigravity.google/docs/cli/permissions/).
+See the [official headless-mode documentation](https://antigravity.google/docs/cli/headless/) and [permissions guide](https://antigravity.google/docs/cli/permissions/) before changing permission policy.
 
 ## Output contract
 
@@ -314,6 +378,12 @@ Static validation requires no Antigravity account:
 
 ```powershell
 ./tests/test-static.ps1
+```
+
+The contract runner has a deterministic regression suite:
+
+```powershell
+node ./scripts/test-regression.mjs
 ```
 
 The live smoke test uses your signed-in account and makes one model request without editing files:

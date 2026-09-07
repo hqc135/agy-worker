@@ -21,7 +21,8 @@
 ## 功能特点
 
 - 调用官方 `agy` CLI，使用其已缓存的 Google 登录状态。
-- 默认使用 `gemini-3.7-flash-medium`，也可选择 `agy models` 返回的其他模型 slug。
+- 默认使用 `gemini-3.8-flash-high`，也可选择 `agy models` 返回的其他模型 slug。
+- 提供版本化任务契约 runner，机器检查文件范围、独立运行验收命令、按 attempt 保存证据，并输出紧凑回执和 review telemetry。
 - 支持可编辑模式和只读规划模式。
 - 返回机器可读 JSON；`agy` 非零退出时抛出清晰的 PowerShell 异常，但不会用 `exit` 终止调用方的宿主进程。
 - 支持使用 `conversation_id` 精确续接任务。
@@ -29,15 +30,15 @@
 - 终端没有代理变量时，可自动继承 Windows 当前手动代理。
 - Antigravity 插件钩子需要 `node`、但宿主 PATH 未包含它时，会自动查找常见 Windows Node.js 安装并临时加入子进程 PATH。
 - 支持显式代理、自定义 `agy` 路径、沙箱和 reasoning effort。
-- 全工具权限默认关闭，必须显式开启。
+- 这套个人 worker 流程默认开放 Antigravity 全工具权限；可用 `-RestrictTools` 恢复审批限制。
 - GitHub Actions 同时校验 Windows PowerShell 5.1 与 PowerShell 7。
 
 ## 已测试环境
 
 - Windows 11
-- Antigravity CLI 1.1.24
+- Antigravity CLI 1.1.26
 - Codex 桌面端/CLI 的 Skill 发现机制
-- `gemini-3.7-flash-medium`
+- `gemini-3.8-flash-high`
 - Windows PowerShell 5.1 与 PowerShell 7 语法
 
 其他平台在安装了 `pwsh` 且 `agy` 位于 `PATH` 时理论上也能运行，但自动读取系统代理仅针对 Windows，目前 CI 尚未覆盖非 Windows 环境。
@@ -165,6 +166,68 @@ git clone https://github.com/hqc135/agy-worker ".agents/skills/agy-worker"
 - 大规模架构改造；
 - 无法在本地测试或复查的修改；
 - 多个 Agent 同时修改相同文件。
+- 浏览器或网站操作：本机实测 Antigravity CLI 的 Browser Navigator 速度慢且不稳定，这类任务保留给 Codex。
+
+## 推荐用法：V1 任务契约 runner
+
+自由 prompt 包装器仍然保留，但日常委托建议统一使用 `scripts/invoke-agy-task.mjs`。契约会把范围和验收条件写死，并只把小型回执交回 Codex，避免把 Gemini 的完整长输出灌进主上下文。
+
+```json
+{
+  "version": "v1",
+  "task_id": "parser-tests-001",
+  "task_type": "test_generation",
+  "goal": "为空输入和错误格式补充解析器测试",
+  "workspace": "C:/path/to/project",
+  "allowed_files": ["tests/parser.test.ts"],
+  "read_scope": ["src/parser.ts", "tests/parser.test.ts"],
+  "acceptance_commands": [
+    {
+      "executable": "npm",
+      "args": ["test", "--", "tests/parser.test.ts"],
+      "timeout": "5m"
+    }
+  ],
+  "forbidden_actions": ["修改 allowed_files 以外的文件"],
+  "max_changed_files": 1,
+  "artifact_dir": "C:/path/to/project/.agy-artifacts/parser-tests-001",
+  "return_mode": "compact",
+  "model": "gemini-3.8-flash-high",
+  "mode": "accept-edits"
+}
+```
+
+从 Codex 或终端执行：
+
+```powershell
+node "$HOME/.agents/skills/agy-worker/scripts/invoke-agy-task.mjs" `
+  --contract "C:/path/to/contract.json"
+```
+
+支持 `implementation`、`test_generation`、`mechanical_edit`、`documentation` 和 `investigation` 五种任务类型。浏览器任务会被明确拒绝。
+
+runner 会：
+
+- 在 worker 和验收命令执行前后快照 Git 可见文件与 ignored 文件；
+- 拒绝越界改动、超出文件数量上限、Git 历史变化和验收失败；
+- 遇到预先存在的脏文件、快照不完整等歧义状态时降级为 `NEEDS_REVIEW`；
+- 把原始输出、命令日志、manifest 和完整 receipt 存到独立 `attempt-*` 目录；
+- 保留旧 attempt，并通过 `latest.json` 指向最新回执；
+- stdout 只输出不超过 16 KiB 的紧凑 JSON 回执；
+- 在后续契约中填写旧 `conversation_id`，即可精确续接同一任务。
+
+`allowed_files` 会被机器检查，但 `read_scope` 和自由文本 `forbidden_actions` 仍是提示词约束，不是操作系统沙箱。Codex 仍需检查 diff 并做语义验收。
+
+验收后记录结果：
+
+```powershell
+node "$HOME/.agents/skills/agy-worker/scripts/record-review.mjs" `
+  --task-id "parser-tests-001" `
+  --verdict pass `
+  --notes "已检查 diff 并通过针对性测试"
+```
+
+verdict 可选 `pass`、`retry` 或 `takeover`。
 
 ## 直接调用包装脚本
 
@@ -198,7 +261,7 @@ $prompt = @'
 agy models
 
 & "$HOME/.agents/skills/agy-worker/scripts/invoke-agy.ps1" `
-  -Model "gemini-3.7-flash-high" `
+  -Model "gemini-3.8-flash-high" `
   -Effort high `
   -Timeout 30m `
   -Prompt $prompt
@@ -220,7 +283,7 @@ agy models
 |---|---:|---|
 | `-Prompt` | 必填 | 发送给 Antigravity 的任务。 |
 | `-Workspace` | 当前目录 | 工作目录和 `--add-dir` 范围。 |
-| `-Model` | `gemini-3.7-flash-medium` | `agy models` 中的精确 slug。 |
+| `-Model` | `gemini-3.8-flash-high` | `agy models` 中的精确 slug。 |
 | `-Mode` | `accept-edits` | `accept-edits` 或 `plan`。 |
 | `-Effort` | 未设置 | 可选 `low`、`medium` 或 `high`。 |
 | `-Timeout` | `15m` | Go 风格时长，例如 `90s`、`15m`、`1h30m`。 |
@@ -229,11 +292,12 @@ agy models
 | `-ProxyUrl` | 自动检测 | 只对本次子进程生效的 HTTP/HTTPS 代理。 |
 | `-NoSystemProxy` | 关闭 | 禁止读取 Windows 手动代理。 |
 | `-Sandbox` | 关闭 | 启用 Antigravity 终端沙箱限制。 |
-| `-AllowAllTools` | 关闭 | 传递 `--dangerously-skip-permissions`。 |
+| `-RestrictTools` | 关闭 | 禁用默认的 `--dangerously-skip-permissions`。 |
+| `-AllowAllTools` | 兼容参数 | 为旧调用方保留；现在默认已经开放全工具权限。 |
 
 ## 权限配置
 
-在 Headless 模式下，活动工作区内的文件读取和写入通常会自动允许；需要确认的命令在无人交互时会被软拒绝。推荐在 `~/.gemini/antigravity-cli/settings.json` 中配置窄范围权限：
+这套个人 worker 配置默认传入 `--dangerously-skip-permissions`。只应在可信工作区中配合范围严格的契约使用；面对敏感或陌生代码时传入 `-RestrictTools`。Antigravity 也支持在 `~/.gemini/antigravity-cli/settings.json` 中配置窄范围权限：
 
 ```json
 {
@@ -247,15 +311,15 @@ agy models
 }
 ```
 
-只在可信工作区和可信提示词下开启全工具权限：
+显式使用受限模式：
 
 ```powershell
 & "$HOME/.agents/skills/agy-worker/scripts/invoke-agy.ps1" `
-  -AllowAllTools `
+  -RestrictTools `
   -Prompt $prompt
 ```
 
-这个参数会允许包括写文件、执行命令在内的全部 Antigravity 工具调用。仅在活动工作区编辑文件并不要求开启它。详细规则见 [官方 Headless 文档](https://antigravity.google/docs/cli/headless/) 和 [权限文档](https://antigravity.google/docs/cli/permissions/)。
+调整权限策略前请阅读 [官方 Headless 文档](https://antigravity.google/docs/cli/headless/) 和 [权限文档](https://antigravity.google/docs/cli/permissions/)。
 
 ## 输出约定
 
@@ -316,6 +380,12 @@ agy models
 
 ```powershell
 ./tests/test-static.ps1
+```
+
+任务契约 runner 还带有确定性回归测试：
+
+```powershell
+node ./scripts/test-regression.mjs
 ```
 
 在线冒烟测试会使用已登录账号发出一次模型请求，但不会修改文件：
