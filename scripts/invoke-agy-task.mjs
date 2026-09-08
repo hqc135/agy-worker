@@ -715,9 +715,15 @@ async function main() {
     process.exit(1);
   }
 
-  const workspace = path.resolve(contract.workspace);
+  const suppliedWorkspace = path.resolve(contract.workspace);
+  const suppliedArtifacts = path.resolve(contract.artifact_dir);
+  // Check links before canonicalizing: resolving a junction must not hide it.
+  plainPath(suppliedArtifacts, suppliedWorkspace);
+  // Windows TEMP may use an 8.3 alias while Git returns its long spelling.
+  const workspace = fs.realpathSync.native(suppliedWorkspace);
   contract.workspace = workspace;
-  const artifactBaseDir = path.resolve(contract.artifact_dir);
+  const artifactBaseDir = path.resolve(workspace, path.relative(suppliedWorkspace, suppliedArtifacts));
+  contract.artifact_dir = artifactBaseDir;
   const attemptId = `attempt-${new Date().toISOString().replace(/[:.]/g, '-')}-${crypto.randomBytes(3).toString('hex')}`;
   const artifactDir = path.join(artifactBaseDir, attemptId);
   plainPath(artifactDir, workspace);
@@ -760,7 +766,7 @@ async function main() {
       encoding: 'utf-8'
     });
     if (toplevel.status === 0) {
-      repoRoot = path.resolve(toplevel.stdout.trim());
+      repoRoot = fs.realpathSync.native(toplevel.stdout.trim());
     } else {
       repoRoot = workspace;
     }
