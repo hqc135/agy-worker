@@ -235,7 +235,12 @@ if (action === 'ALLOWED_EDIT') {
     });
 
     if (run1.status !== 0) {
-      throw new Error(`Test 1 runner failed with exit code ${run1.status}: ${run1.stderr}`);
+      const attempt = getAttemptDir(artifactDir1);
+      console.error(fs.readFileSync(path.join(attempt, 'receipt.json'), 'utf-8'));
+      for (const name of fs.readdirSync(attempt).filter(name => name.endsWith('.log'))) {
+        console.error(name, fs.readFileSync(path.join(attempt, name), 'utf-8'));
+      }
+      throw new Error(`Test 1 runner failed with exit code ${run1.status}: ${run1.stderr}\n${run1.stdout}`);
     }
 
     let receipt1;
