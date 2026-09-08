@@ -36,12 +36,12 @@
 ## 已测试环境
 
 - Windows 11
-- Antigravity CLI 1.1.26
+- Antigravity CLI 1.1.27（2026-09-08 真实契约冒烟）
 - Codex 桌面端/CLI 的 Skill 发现机制
 - `gemini-3.8-flash-high`
 - Windows PowerShell 5.1 与 PowerShell 7 语法
 
-其他平台在安装了 `pwsh` 且 `agy` 位于 `PATH` 时理论上也能运行，但自动读取系统代理仅针对 Windows，目前 CI 尚未覆盖非 Windows 环境。
+受管理的任务 runner 需要 Windows Job Objects、Node.js 和 PowerShell。其他平台可以在安装 `pwsh` 后使用旧版自由 prompt 包装器，但没有进程树管理保证，CI 也未覆盖这些平台。
 
 ## 前置条件
 
@@ -166,7 +166,7 @@ git clone https://github.com/hqc135/agy-worker ".agents/skills/agy-worker"
 - 大规模架构改造；
 - 无法在本地测试或复查的修改；
 - 多个 Agent 同时修改相同文件。
-- 浏览器或网站操作：本机实测 Antigravity CLI 的 Browser Navigator 速度慢且不稳定，这类任务保留给 Codex。
+- 浏览器或网站操作：一次本地测试在协助配置后成功，后一次耗时 190 秒且未能取得浏览器工具，因此本项目把这类任务保留给 Codex；这不是对 Gemini 浏览器能力的通用评测结论。
 
 ## 推荐用法：V1 任务契约 runner
 
@@ -208,13 +208,13 @@ node "$HOME/.agents/skills/agy-worker/scripts/invoke-agy-task.mjs" `
 
 runner 会：
 
-- 在 worker 和验收命令执行前后快照 Git 可见文件与 ignored 文件；
+- 为 tracked 文件（含 assume-unchanged/skip-worktree）、可见改动和 ignored 文件计算哈希，在验收前及每条命令后检查；
 - 拒绝越界改动、超出文件数量上限、Git 历史变化和验收失败；
 - 遇到预先存在的脏文件、快照不完整等歧义状态时降级为 `NEEDS_REVIEW`；
 - 把原始输出、命令日志、manifest 和完整 receipt 存到独立 `attempt-*` 目录；
-- 保留旧 attempt，并通过 `latest.json` 指向最新回执；
+- 单独检测旧 attempt 和 `latest.json` 是否被改动，再由 runner 更新最新指针；
 - stdout 只输出不超过 16 KiB 的紧凑 JSON 回执；
-- 在后续契约中填写旧 `conversation_id`，即可精确续接同一任务。
+- 使用 `conversation_id` 和 `retry_of`（上次 receipt 路径）精确重试一次，保持范围、模型、权限和验收条件一致。
 
 `allowed_files` 会被机器检查，但 `read_scope` 和自由文本 `forbidden_actions` 仍是提示词约束，不是操作系统沙箱。Codex 仍需检查 diff 并做语义验收。
 
@@ -222,12 +222,39 @@ runner 会：
 
 ```powershell
 node "$HOME/.agents/skills/agy-worker/scripts/record-review.mjs" `
-  --task-id "parser-tests-001" `
+  --receipt "C:/path/to/current-attempt/receipt.json" `
   --verdict pass `
   --notes "已检查 diff 并通过针对性测试"
 ```
 
 verdict 可选 `pass`、`retry` 或 `takeover`。
+
+## 1.2 / 1.3：验收加固与委托效率
+
+契约协议仍使用 `version: "v1"`，回执通过 `runner_version: "1.3.0"` 标明实现版本。
+
+新增可选契约字段：
+
+| 字段 | 用途 |
+|---|---|
+| `required_artifacts` | 本次 attempt 内必须存在的普通文件，例如 `["draft.md"]`，且必须列在 worker manifest 中。 |
+| `task_details` | 读者、语气、来源事实、变换示例或测试行为，最多 12,000 字符。 |
+| `restrict_tools` | 设为 `true` 时传入 `-RestrictTools`；默认仍开放全工具权限。 |
+| `retry_of` | 上次 receipt 路径，须与 `conversation_id` 同时填写，最多同范围重试一次。 |
+
+runner 会把 `references/task-templates.json` 中对应任务的轻量模板加入提示词。遇到环境、登录或模型错误，Gemini 应及时返回 blocked，由 Codex 处理；同一重试链不再重试此类错误，普通任务的第二次重试也会在调用模型前被拒绝。
+
+调用前检查仅检查本地 CLI 和已配置代理端点是否可达。CLI 版本按可执行文件路径、大小和修改时间缓存 24 小时。它不会额外请求模型列表，也不表示登录已经确认；账号和模型访问由真正的 worker 调用验证。
+
+worker 的范围和产物检查通过后才执行测试。每条验收命令后再次检查，若出现越界，后续命令跳过。旧 attempt 单独检查，manifest 产物需核验并计算哈希，因此只有总结却没有文稿的任务不会通过。子模块、链接/junction、硬链接、无法读取的文件或超出快照上限会阻止确定性通过。tracked 快照上限为 50,000 项 / 256 MiB，历史证据为 10,000 文件 / 256 MiB。
+
+每次受管理的调用放在 Windows Job Object 内。超时或监督进程退出会结束包括 detached 子进程在内的后代进程；本次调用前就已运行的外部服务不在这棵进程树里。这是进程生命周期管理，不是文件系统或网络沙箱。
+
+退出码：`0` 表示 `READY_FOR_REVIEW`，`2` 表示 `NEEDS_REVIEW`，`3` 表示 `REJECTED`，`1` 表示 runner / 契约错误。调用方即使看到非零退出码，也应读取 JSON 回执。退出码 0 仍需要 Codex 做语义验收。
+
+review 命令现在必须传入 `--receipt`，记录具体 attempt ID 与 receipt 哈希；标记 `pass` 前会复查变更文件和产物是否仍与回执哈希一致。不含哈希的旧 receipt 需要重新运行，仅 task ID 的 review 不再接受。
+
+`allowed_files`、快照和回执属于可观察状态检查，不是抵御同权限恶意进程的安全边界。检查前被还原的临时改动、检查仓库以外的写入，以及外部副作用，都不能由这些门禁证明没有发生。
 
 ## 直接调用包装脚本
 
@@ -386,6 +413,7 @@ agy models
 
 ```powershell
 node ./scripts/test-regression.mjs
+node ./scripts/test-hardening.mjs
 ```
 
 在线冒烟测试会使用已登录账号发出一次模型请求，但不会修改文件：
@@ -394,7 +422,7 @@ node ./scripts/test-regression.mjs
 ./tests/test-live.ps1
 ```
 
-仓库自带的 GitHub Actions 会在 Windows PowerShell 5.1 和 PowerShell 7 下执行静态校验。
+GitHub Actions 会在 Windows PowerShell 5.1 和 PowerShell 7 下执行静态校验，再运行回归与加固测试。加固测试覆盖跳过危险验收、隐藏 tracked 改动、历史证据、产物、过期 review、重试上限，以及超时子进程的延迟写入。
 
 ## 更新与卸载
 
@@ -411,7 +439,7 @@ git -C "$HOME/.agents/skills/agy-worker" pull --ff-only
 - 提示词和 Antigravity 读取的文件受 Google 对应条款及账号设置约束。
 - 不要委派密钥、令牌或敏感生产数据。
 - 接受模型修改前必须进行代码审查。
-- 默认保持全工具权限关闭。
+- 当前默认开放全工具权限。请使用可信工作区和明确范围；需要审批限制时用契约的 `restrict_tools: true` 或旧包装器的 `-RestrictTools`。
 - 本 Skill 不读取、保存或发布 Antigravity 凭据。
 
 ## 许可证与商标

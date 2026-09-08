@@ -36,12 +36,12 @@ The important part is the review boundary. Antigravity's prose is never treated 
 ## Tested environment
 
 - Windows 11
-- Antigravity CLI 1.1.26
+- Antigravity CLI 1.1.27 (live contract smoke on 2026-09-08)
 - Codex desktop/CLI skill discovery
 - `gemini-3.8-flash-high`
 - Windows PowerShell 5.1 and PowerShell 7 syntax
 
-Other platforms should work when `pwsh` and `agy` are on `PATH`, but automatic system-proxy discovery is Windows-specific and non-Windows platforms are not yet tested in CI.
+The managed task runner requires Windows Job Objects, Node.js, and PowerShell. The legacy free-prompt wrapper can be used elsewhere with `pwsh`, but it has no managed process-tree guarantee and is not covered by CI on other platforms.
 
 ## Requirements
 
@@ -164,7 +164,7 @@ Poor tasks:
 - large architectural changes;
 - changes that cannot be tested or reviewed locally;
 - overlapping edits from multiple agents in the same files.
-- browser or website interaction: local testing found Antigravity CLI's Browser Navigator slow and nondeterministic, so those tasks should stay with Codex.
+- browser or website interaction: one local assisted run succeeded, while a subsequent run took 190 seconds and could not expose browser tools. This project keeps browser tasks with Codex; this is not a general benchmark of Gemini.
 
 ## Recommended: V1 task-contract runner
 
@@ -206,13 +206,13 @@ Supported task types are `implementation`, `test_generation`, `mechanical_edit`,
 
 The runner:
 
-- snapshots Git-visible and ignored files before and after the worker and acceptance commands;
+- hashes tracked files including assume-unchanged/skip-worktree paths, visible changes and ignored files; gates before acceptance and after each command;
 - rejects changes outside `allowed_files`, excessive file counts, Git history mutation, and acceptance failures;
 - downgrades ambiguous states such as pre-existing dirty files or incomplete snapshots to `NEEDS_REVIEW`;
 - stores raw output, command logs, manifests, and full receipts in a unique `attempt-*` directory;
-- keeps previous attempts and updates `latest.json` to the newest receipt;
+- detects changes to previous attempts and `latest.json`, then updates the pointer itself;
 - emits a compact JSON receipt capped at 16 KiB;
-- supports exact continuation by putting a prior `conversation_id` in the next contract.
+- permits one precise retry using both `conversation_id` and `retry_of` (the prior receipt path), while retaining scope, model, permissions and acceptance checks.
 
 `allowed_files` is machine-checked, but `read_scope` and free-form `forbidden_actions` are instructions rather than an OS sandbox. Codex must still inspect the diff and decide whether the result is correct.
 
@@ -220,12 +220,39 @@ After semantic review, record the outcome:
 
 ```powershell
 node "$HOME/.agents/skills/agy-worker/scripts/record-review.mjs" `
-  --task-id "parser-tests-001" `
+  --receipt "C:/path/to/current-attempt/receipt.json" `
   --verdict pass `
   --notes "Diff and focused tests verified"
 ```
 
 Valid verdicts are `pass`, `retry`, and `takeover`.
+
+## Versions 1.2 and 1.3: acceptance and delegation
+
+The contract protocol remains `version: "v1"`; receipts identify implementation `runner_version: "1.3.0"`.
+
+New optional contract fields:
+
+| Field | Purpose |
+|---|---|
+| `required_artifacts` | Existing regular files required inside the current attempt, e.g. `["draft.md"]`. Each must be declared in the worker manifest. |
+| `task_details` | Audience, tone, source facts, transformation examples, or test behaviors (up to 12,000 characters). |
+| `restrict_tools` | `true` forwards `-RestrictTools`; default remains unrestricted. |
+| `retry_of` | Previous receipt path, supplied together with `conversation_id`. One same-scope retry at most. |
+
+The runner inserts lightweight type-specific instructions from `references/task-templates.json`. Gemini should report blocked on environment, authentication or model errors and leave remediation to Codex. These failures cannot be retried through the same retry chain; a second ordinary retry is rejected before calling Gemini.
+
+Local preflight checks the executable and configured proxy endpoint. CLI version metadata is cached for 24 hours by executable path, size, and modification time. It does **not** make a model-list request or certify authentication; account/model access is checked by the real worker call.
+
+Worker scope and evidence must pass before tests execute. Each acceptance command is followed by another scope check; later commands are skipped after a violation. Historical attempts are inspected separately. Declared artifacts are verified and hashed; a nonexistent draft cannot pass by summary alone. Submodules, links/junctions, hard links, unreadable files or snapshot size limits prevent a deterministic green receipt. Tracked snapshots cap at 50,000 entries/256 MiB; historical evidence caps at 10,000 files/256 MiB.
+
+Each managed process runs in a Windows Job Object. Timeout or supervisor exit terminates descendants, including detached children. Existing external services are outside that process tree. This is lifecycle management, not a filesystem or network sandbox.
+
+Exit codes are `0` for `READY_FOR_REVIEW`, `2` for `NEEDS_REVIEW`, `3` for `REJECTED`, and `1` for runner/contract errors. Callers must parse the receipt even when exit code is nonzero. Code 0 still requires Codex semantic review.
+
+Review commands now require `--receipt`. They record the attempt ID and receipt hash, and a `pass` verifies changed files/artifacts have not changed since that receipt. Old receipts without hashes must be rerun; task-ID-only review is no longer accepted.
+
+`allowed_files`, snapshots and receipts remain checks on observed state, not a security boundary against a malicious process with the same OS permissions. Temporary changes reverted before inspection, writes outside the inspected repository and external side effects cannot be certified by these gates.
 
 ## Direct wrapper usage
 
@@ -384,6 +411,7 @@ The contract runner has a deterministic regression suite:
 
 ```powershell
 node ./scripts/test-regression.mjs
+node ./scripts/test-hardening.mjs
 ```
 
 The live smoke test uses your signed-in account and makes one model request without editing files:
@@ -392,7 +420,7 @@ The live smoke test uses your signed-in account and makes one model request with
 ./tests/test-live.ps1
 ```
 
-The repository's GitHub Actions workflow runs static validation under Windows PowerShell 5.1 and PowerShell 7.
+The repository's GitHub Actions workflow runs static validation under Windows PowerShell 5.1 and PowerShell 7, followed by the regression and hardening suites. Hardening tests exercise skipped acceptance, hidden tracked changes, historical evidence, artifacts, stale reviews, retry limits and delayed writes from timed-out child processes.
 
 ## Updating and uninstalling
 
@@ -409,7 +437,7 @@ To uninstall, remove only the specific `agy-worker` Skill directory after verify
 - Prompts and any files Antigravity reads are handled under Google's applicable terms and settings.
 - Do not delegate secrets or sensitive production data.
 - Review model-produced changes before accepting them.
-- Keep unrestricted tool permission off by default.
+- The default is unrestricted tools. Use a trusted workspace and explicit scope; select `restrict_tools: true` or the legacy wrapper's `-RestrictTools` when you need approval restrictions.
 - This Skill does not read, store, or publish Antigravity credentials.
 
 ## License and trademarks

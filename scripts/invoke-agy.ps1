@@ -29,6 +29,8 @@ param(
 
     [switch]$NoSystemProxy,
 
+    [switch]$PreflightOnly,
+
     [switch]$Sandbox,
 
     # This installation defaults to unrestricted Antigravity tool execution at
@@ -164,6 +166,50 @@ $stderrFile = New-TemporaryFile
 try {
     Push-Location -LiteralPath $resolvedWorkspace
     try {
+        if ($PreflightOnly) {
+            # Validate only local prerequisites. Account/model access is determined
+            # by the actual call, avoiding a second network request per task.
+            $proxyValue = if ($effectiveProxyUrl) { $effectiveProxyUrl } elseif ($env:HTTPS_PROXY) { $env:HTTPS_PROXY } elseif ($env:HTTP_PROXY) { $env:HTTP_PROXY } else { $env:ALL_PROXY }
+            if ($proxyValue) {
+                $proxyUri = [Uri]$proxyValue
+                if (-not $proxyUri.IsAbsoluteUri -or -not $proxyUri.Host) { throw 'Invalid proxy URL.' }
+                $proxyPort = $proxyUri.Port
+                if ($proxyPort -lt 1) { $proxyPort = 1080 }
+                $client = New-Object Net.Sockets.TcpClient
+                try {
+                    $pending = $client.BeginConnect($proxyUri.Host, $proxyPort, $null, $null)
+                    if (-not $pending.AsyncWaitHandle.WaitOne(1500)) { throw 'Configured proxy is not reachable.' }
+                    $client.EndConnect($pending)
+                } finally { $client.Dispose() }
+            }
+            $cacheRoot = if ($env:AGY_PREFLIGHT_CACHE) { $env:AGY_PREFLIGHT_CACHE } else { Join-Path $env:USERPROFILE '.config\agy-worker\preflight' }
+            $cliFile = Get-Item -LiteralPath $resolvedAgyPath
+            $cacheKey = "$resolvedAgyPath|$($cliFile.Length)|$($cliFile.LastWriteTimeUtc.Ticks)"
+            $sha = [Security.Cryptography.SHA256]::Create()
+            try { $keyHash = [BitConverter]::ToString($sha.ComputeHash([Text.Encoding]::UTF8.GetBytes($cacheKey))).Replace('-','') } finally { $sha.Dispose() }
+            $cachePath = Join-Path $cacheRoot "$keyHash.json"
+            $versionInfo = $null
+            if (Test-Path -LiteralPath $cachePath) {
+                try {
+                    $cached = Get-Content -LiteralPath $cachePath -Raw | ConvertFrom-Json
+                    if ([DateTime]::UtcNow -lt [DateTime]::Parse($cached.expires_utc)) { $versionInfo = $cached.version }
+                } catch { $versionInfo = $null }
+            }
+            $cacheHit = $null -ne $versionInfo
+            if (-not $versionInfo) {
+                if ([IO.Path]::GetExtension($resolvedAgyPath) -eq '.ps1') {
+                    $versionInfo = 'custom-wrapper'
+                } else {
+                    $versionInfo = (& $resolvedAgyPath --version 2> $stderrFile.FullName) -join ' '
+                    if ($LASTEXITCODE -ne 0 -or -not $versionInfo) { throw 'agy version check failed.' }
+                }
+                New-Item -ItemType Directory -Path $cacheRoot -Force | Out-Null
+                @{ version = $versionInfo; expires_utc = [DateTime]::UtcNow.AddHours(24).ToString('o') } |
+                    ConvertTo-Json | Set-Content -LiteralPath $cachePath -Encoding UTF8
+            }
+            @{status='READY'; cli_version=$versionInfo; cache_hit=$cacheHit; proxy_configured=[bool]$proxyValue; account_check='deferred-to-worker'; model=$Model} | ConvertTo-Json -Compress
+            return
+        }
         $stdoutLines = & $resolvedAgyPath @agyArguments 2> $stderrFile.FullName
         $agyExitCode = $LASTEXITCODE
     } finally {

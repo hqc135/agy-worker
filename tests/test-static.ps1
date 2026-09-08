@@ -12,6 +12,10 @@ $requiredFiles = @(
     'scripts/invoke-agy-task.mjs',
     'scripts/record-review.mjs',
     'scripts/test-regression.mjs',
+    'scripts/test-hardening.mjs',
+    'scripts/integrity.mjs',
+    'scripts/process-job.ps1',
+    'references/task-templates.json',
     'references/task-contract.schema.json',
     'references/worker-manifest.schema.json',
     'references/task-types.md',
@@ -37,6 +41,11 @@ if ($parseErrors.Count -gt 0) {
 }
 
 $wrapperText = Get-Content -Raw -LiteralPath $wrapperPath
+foreach ($helper in @('scripts/process-job.ps1')) {
+    [System.Management.Automation.Language.Parser]::ParseFile((Join-Path $repoRoot $helper), [ref]$tokens, [ref]$parseErrors) | Out-Null
+    if ($parseErrors.Count -gt 0) { throw "PowerShell parse errors in $helper" }
+}
+Get-Content -Raw -LiteralPath (Join-Path $repoRoot 'references/task-templates.json') | ConvertFrom-Json | Out-Null
 if ($wrapperText -match '(?m)^\s*exit\s+\$agyExitCode\s*$') {
     throw 'The wrapper must not terminate its PowerShell host with exit $agyExitCode.'
 }
@@ -67,7 +76,7 @@ foreach ($schemaName in @('task-contract.schema.json', 'worker-manifest.schema.j
 
 $node = Get-Command node -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
 if ($node) {
-    foreach ($scriptName in @('invoke-agy-task.mjs', 'record-review.mjs', 'test-regression.mjs')) {
+    foreach ($scriptName in @('invoke-agy-task.mjs', 'record-review.mjs', 'test-regression.mjs', 'test-hardening.mjs', 'integrity.mjs')) {
         & $node.Path --check (Join-Path $repoRoot "scripts/$scriptName")
         if ($LASTEXITCODE -ne 0) {
             throw "Node syntax validation failed: scripts/$scriptName"

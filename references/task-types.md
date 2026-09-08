@@ -17,4 +17,8 @@ Use the smallest contract that lets Codex verify the outcome. Git cleanliness pr
 
 ## Browser Tasks
 
-Do not send browser or website interaction through this skill. Local testing found Antigravity CLI's Browser Navigator slow and nondeterministic even with a healthy Chrome DevTools endpoint. Keep browser work on Codex's own browser/computer-use path; use agy only for bounded non-browser follow-up such as drafting text from evidence Codex has already collected.
+Do not send browser or website interaction through this skill. One local run succeeded with manual setup assistance; a subsequent run took 190 seconds and failed to expose browser tools. This does not establish a general Gemini capability limitation. Keep browser work on Codex's own browser/computer-use path; use agy only for bounded non-browser follow-up such as drafting text from evidence Codex has already collected.
+
+## Task templates
+
+The runner includes type-specific guidance automatically from `task-templates.json`. Put concrete audience/tone/source facts, transformation examples, or test behaviors in `task_details`. For artifact-only work, set `required_artifacts` to paths relative to the current attempt. No missing file can be accepted merely because the summary claims success.

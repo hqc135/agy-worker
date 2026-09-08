@@ -5,6 +5,7 @@ import os from 'node:os';
 import crypto from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import { fileDigest, plainPath, evidenceSnapshot, checkArtifacts } from './integrity.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -179,14 +180,29 @@ function getPowerShellExecutable() {
   return 'pwsh';
 }
 
+function runManaged(executable, args, options) {
+  if (process.platform !== 'win32') throw new Error('Managed task execution currently requires Windows Job Objects.');
+  const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'agy-job-'));
+  const payload = path.join(temp, 'command.json');
+  try {
+    fs.writeFileSync(payload, JSON.stringify({executable, args}), 'utf8');
+    return spawnSync(getPowerShellExecutable(), [
+      '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass',
+      '-File', path.join(__dirname, 'process-job.ps1'), '-PayloadFile', payload
+    ], options);
+  } finally {
+    fs.rmSync(temp, {recursive:true, force:true});
+  }
+}
+
 function spawnAcceptance(executable, commandArgs, options) {
   if (process.platform === 'win32' && /\.(cmd|bat)$/i.test(executable)) {
     const psLiteral = value => `'${String(value).replace(/'/g, "''")}'`;
     const script = `& ${psLiteral(executable)} ${commandArgs.map(psLiteral).join(' ')}; exit $LASTEXITCODE`;
     const encoded = Buffer.from(script, 'utf16le').toString('base64');
-    return spawnSync(getPowerShellExecutable(), ['-NoProfile', '-NonInteractive', '-EncodedCommand', encoded], options);
+    return runManaged(getPowerShellExecutable(), ['-NoProfile', '-NonInteractive', '-EncodedCommand', encoded], options);
   }
-  return spawnSync(executable, commandArgs, options);
+  return runManaged(executable, commandArgs, options);
 }
 
 function validateContract(contract) {
@@ -280,17 +296,35 @@ function validateContract(contract) {
   if (contract.conversation_id !== undefined && (typeof contract.conversation_id !== 'string' || contract.conversation_id.length === 0)) {
     throw new Error('Contract conversation_id must be a non-empty string.');
   }
+  for (const value of [contract.timeout, contract.acceptance_timeout,
+      ...contract.acceptance_commands.filter(v => typeof v === 'object').map(v => v.timeout)]) {
+    if (value !== undefined) durationToMs(value);
+  }
 
   const allowedKeys = new Set([
     'version', 'task_id', 'task_type', 'goal', 'workspace', 'allowed_files',
     'read_scope', 'acceptance_commands', 'forbidden_actions',
     'max_changed_files', 'artifact_dir', 'return_mode', 'model', 'mode',
-    'timeout', 'acceptance_timeout', 'conversation_id'
+    'timeout', 'acceptance_timeout', 'conversation_id', 'restrict_tools',
+    'required_artifacts', 'task_details', 'retry_of'
   ]);
   const unknownKeys = Object.keys(contract).filter(key => !allowedKeys.has(key));
   if (unknownKeys.length > 0) {
     throw new Error(`Unknown contract fields: ${unknownKeys.join(', ')}`);
   }
+
+  if (contract.restrict_tools !== undefined && typeof contract.restrict_tools !== 'boolean')
+    throw new Error('restrict_tools must be boolean.');
+  if (contract.task_details !== undefined && (typeof contract.task_details !== 'string' || contract.task_details.length > 12000))
+    throw new Error('task_details must be a string of at most 12000 characters.');
+  if (contract.retry_of !== undefined && typeof contract.retry_of !== 'string')
+    throw new Error('retry_of must be a prior receipt path.');
+  if (Boolean(contract.conversation_id) !== Boolean(contract.retry_of))
+    throw new Error('conversation_id and retry_of must be supplied together.');
+  if (contract.required_artifacts !== undefined && (!Array.isArray(contract.required_artifacts) ||
+      !contract.required_artifacts.every(v => typeof v === 'string' && v.length > 0 && !path.isAbsolute(v) &&
+        !v.split(/[\\\\/]/).includes('..'))))
+    throw new Error('required_artifacts must contain relative paths within the current attempt.');
 
   const realWs = resolveForContainment(resolvedWs);
   for (const [field, values] of [['allowed_files', contract.allowed_files], ['read_scope', contract.read_scope]]) {
@@ -332,13 +366,15 @@ function durationToMs(value) {
   const regex = /(\d+(?:\.\d+)?)(ns|us|µs|ms|s|m|h)/g;
   let match;
   while ((match = regex.exec(value)) !== null) total += Number(match[1]) * units[match[2]];
-  return total > 0 ? Math.ceil(total) : 15 * 60 * 1000;
+  if (!Number.isFinite(total) || total <= 0 || total > 24 * 60 * 60 * 1000) throw new Error('Duration must be positive and at most 24h.');
+  return Math.ceil(total);
 }
 
 function getFileHash(absPath) {
   try {
     if (fs.existsSync(absPath) && fs.statSync(absPath).isFile()) {
-      return crypto.createHash('sha256').update(fs.readFileSync(absPath)).digest('hex');
+      if (fs.lstatSync(absPath).size > 256 * 1024 * 1024) return null;
+      return fileDigest(absPath, path.parse(path.resolve(absPath)).root);
     }
   } catch {
     return null;
@@ -399,6 +435,37 @@ function getGitSnapshot(repoRoot) {
     });
   }
 
+  // Hash every tracked path, including assume-unchanged/skip-worktree files
+  // that git status may omit. Index content and flags are part of the snapshot.
+  const tracked = spawnSync('git', ['-C', repoRoot, 'ls-files', '--stage', '-v', '-z'], {maxBuffer:50*1024*1024, windowsHide:true});
+  if (tracked.status !== 0) return {snapshot, complete:false, reason:'Tracked-file enumeration failed.'};
+  let bytes = 0;
+  const rows = tracked.stdout.toString('utf8').split('\0').filter(Boolean);
+  if (rows.length > 50000) return {snapshot, complete:false, reason:'Tracked-file count exceeds 50000.'};
+  for (const row of rows) {
+    const tab = row.indexOf('\t');
+    const metadata = row.slice(0, tab);
+    const relPath = row.slice(tab + 1);
+    const absPath = path.resolve(repoRoot, relPath);
+    const key = normalizePath(absPath);
+    const entry = snapshot.get(key) || {relPath, absPath, statusCode:'  ', hash:null};
+    entry.index = metadata;
+    snapshot.set(key, entry);
+    if (/^\S 160000 /.test(metadata)) return {snapshot, complete:false, reason:'Submodule content is not supported: ' + relPath};
+    if (/^\S 120000 /.test(metadata)) return {snapshot, complete:false, reason:'Tracked symbolic link is not supported: ' + relPath};
+    try {
+      plainPath(absPath, repoRoot);
+      if (fs.existsSync(absPath)) {
+        bytes += fs.lstatSync(absPath).size;
+        if (bytes > 256*1024*1024) throw new Error('Tracked-file bytes exceed 256 MiB');
+        entry.hash = fileDigest(absPath, repoRoot);
+      } else entry.hash = null;
+    } catch (err) {return {snapshot, complete:false, reason:err.message};}
+  }
+  for (const entry of snapshot.values()) {
+    if (entry.hash === null && fs.existsSync(entry.absPath))
+      return {snapshot, complete:false, reason:'File could not be hashed: ' + entry.relPath};
+  }
   return { snapshot, complete: true, reason: null };
 }
 
@@ -653,7 +720,31 @@ async function main() {
   const artifactBaseDir = path.resolve(contract.artifact_dir);
   const attemptId = `attempt-${new Date().toISOString().replace(/[:.]/g, '-')}-${crypto.randomBytes(3).toString('hex')}`;
   const artifactDir = path.join(artifactBaseDir, attemptId);
+  plainPath(artifactDir, workspace);
   fs.mkdirSync(artifactDir, { recursive: true });
+  const previousEvidence = evidenceSnapshot(artifactBaseDir, artifactDir, workspace);
+  let retryCount = 0;
+  if (contract.retry_of) {
+    const prior = JSON.parse(fs.readFileSync(path.resolve(contract.retry_of), 'utf8'));
+    if (prior.task_id !== contract.task_id || prior.workspace !== workspace ||
+        prior.conversation_id !== contract.conversation_id)
+      throw new Error('Retry must match prior task, workspace, and conversation.');
+    retryCount = (prior.retry_count || 0) + 1;
+    if (retryCount > 1 || ['auth','environment','model'].includes(prior.failure_category))
+      throw new Error('Retry budget exhausted or environment/auth/model failure: Codex must take over.');
+    if (JSON.stringify(prior.contract_scope) !== JSON.stringify({
+      allowed_files:contract.allowed_files, read_scope:contract.read_scope, max_changed_files:contract.max_changed_files,
+      model:contract.model || 'gemini-3.8-flash-high', restrict_tools:contract.restrict_tools || false,
+      forbidden_actions:contract.forbidden_actions, acceptance_commands:contract.acceptance_commands,
+      required_artifacts:contract.required_artifacts || [], task_type:contract.task_type
+    })) throw new Error('A retry may not change scope, permissions, model, or acceptance checks.');
+  }
+  const writeArtifact = (target, content) => {
+    plainPath(target, workspace);
+    if (fs.existsSync(target) && (!fs.lstatSync(target).isFile() || fs.lstatSync(target).nlink > 1))
+      throw new Error('Unsafe runner output path: ' + target);
+    fs.writeFileSync(target, content, 'utf8');
+  };
 
   // 1. Snapshot Git Worktree state before worker run
   let isGitRepo = false;
@@ -705,10 +796,15 @@ async function main() {
     : '  (None specified)';
   const forbiddenDisplay = contract.forbidden_actions.map(f => `  - ${f}`).join('\n');
 
+  const templates = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'references', 'task-templates.json'), 'utf8'));
   const promptText = `TASK CONTRACT V1 EXECUTION
 Task ID: ${contract.task_id}
 Task Type: ${contract.task_type}
 Goal: ${contract.goal}
+Task guidance: ${templates[contract.task_type]}
+Task details: ${contract.task_details || '(none)'}
+Required artifact paths relative to this attempt: ${JSON.stringify(contract.required_artifacts || [])}
+If blocked by authentication, model availability or environment, stop promptly. Do not install tools or repair global settings. No autonomous retries.
 
 Workspace: ${contract.workspace}
 
@@ -752,6 +848,7 @@ OUTPUT INSTRUCTIONS:
   if (contract.mode) {
     psArgs.push('-Mode', contract.mode);
   }
+  if (contract.restrict_tools) psArgs.push('-RestrictTools');
   if (contract.timeout) {
     psArgs.push('-Timeout', contract.timeout);
   }
@@ -764,20 +861,28 @@ OUTPUT INSTRUCTIONS:
     psArgs.push('-AgyPath', path.resolve(effectiveAgyPath));
   }
 
-  const agyRun = spawnSync(psExe, psArgs, {
+  const preflightRun = runManaged(psExe, [...psArgs, '-PreflightOnly'], {
+    cwd: workspace, encoding:'utf8', windowsHide:true, timeout:15000, maxBuffer:2*1024*1024
+  });
+  let preflight;
+  try { preflight = JSON.parse(preflightRun.stdout); } catch { preflight = {status:'FAILED'}; }
+  const agyRun = preflightRun.status !== 0 || preflight.status !== 'READY'
+    ? {status:1, stdout:'', stderr:preflightRun.stderr || 'Preflight failed', error:preflightRun.error}
+    : runManaged(psExe, psArgs, {
     cwd: contract.workspace,
     encoding: 'utf-8',
     windowsHide: true,
     maxBuffer: 50 * 1024 * 1024,
-    timeout: durationToMs(contract.timeout || '15m') + 30000,
+    timeout: durationToMs(contract.timeout || '15m'),
     killSignal: 'SIGTERM'
   });
 
   // 4. Save raw agy JSON result under artifact directory
   const rawAgyArtifactPath = path.join(artifactDir, 'raw-agy-output.json');
-  fs.writeFileSync(rawAgyArtifactPath, JSON.stringify({
+  writeArtifact(rawAgyArtifactPath, JSON.stringify({
     exit_code: agyRun.status,
     signal: agyRun.signal,
+    process_error: agyRun.error ? agyRun.error.code || agyRun.error.message : null,
     stdout: agyRun.stdout || '',
     stderr: agyRun.stderr || ''
   }, null, 2), 'utf-8');
@@ -844,7 +949,7 @@ OUTPUT INSTRUCTIONS:
 
   if (workerManifest) {
     const workerManifestPath = path.join(artifactDir, 'worker-manifest.json');
-    fs.writeFileSync(workerManifestPath, JSON.stringify(workerManifest, null, 2), 'utf-8');
+    writeArtifact(workerManifestPath, JSON.stringify(workerManifest, null, 2), 'utf-8');
   }
 
   // 5. Snapshot Git Worktree state after worker and verify scope
@@ -862,6 +967,12 @@ OUTPUT INSTRUCTIONS:
     preExistingDirtyTouched.length = 0;
     scopeViolations.length = 0;
     scopeDeterministic = true;
+
+    try {
+      const afterEvidence = evidenceSnapshot(artifactBaseDir, artifactDir, workspace);
+      if (JSON.stringify(previousEvidence) !== JSON.stringify(afterEvidence))
+        scopeViolations.push('Historical artifact evidence was changed outside the current attempt.');
+    } catch (err) { scopeViolations.push('Historical artifact inspection failed: ' + err.message); }
 
     if (!isGitRepo || !repoRoot) {
       scopeDeterministic = false;
@@ -913,10 +1024,10 @@ OUTPUT INSTRUCTIONS:
       const beforeEntry = combinedBefore.get(normPath);
       if (!beforeEntry) {
         touchedFiles.push(afterEntry.absPath);
-      } else if (beforeEntry.hash !== afterEntry.hash || beforeEntry.statusCode !== afterEntry.statusCode) {
+      } else if (beforeEntry.hash !== afterEntry.hash || beforeEntry.statusCode !== afterEntry.statusCode || beforeEntry.index !== afterEntry.index) {
         touchedFiles.push(afterEntry.absPath);
-        if (snapshotBefore.has(normPath)) preExistingDirtyTouched.push(afterEntry.absPath);
-      } else if (snapshotBefore.has(normPath)) {
+        if (snapshotBefore.has(normPath) && snapshotBefore.get(normPath).statusCode !== '  ') preExistingDirtyTouched.push(afterEntry.absPath);
+      } else if (snapshotBefore.has(normPath) && snapshotBefore.get(normPath).statusCode !== '  ') {
         preExistingDirty.push(afterEntry.absPath);
       }
     }
@@ -925,7 +1036,7 @@ OUTPUT INSTRUCTIONS:
       if (isInsideDir(beforeEntry.absPath, artifactBaseDir)) continue;
       if (!combinedAfter.has(normPath)) {
         touchedFiles.push(beforeEntry.absPath);
-        if (snapshotBefore.has(normPath)) preExistingDirtyTouched.push(beforeEntry.absPath);
+        if (snapshotBefore.has(normPath) && snapshotBefore.get(normPath).statusCode !== '  ') preExistingDirtyTouched.push(beforeEntry.absPath);
       }
     }
 
@@ -949,11 +1060,21 @@ OUTPUT INSTRUCTIONS:
   // 6. Independently run acceptance_commands after worker
   const acceptanceResults = [];
   let acceptanceAllPassed = true;
+  recomputeScope();
+  const workerScopeCheck = {passed:scopeViolations.length === 0 && scopeDeterministic, violations:[...scopeViolations]};
+  const workerArtifactCheck = checkArtifacts(workerManifest, contract.required_artifacts, artifactDir, workspace);
+  const canRunAcceptance = agySuccess && workerManifest?.status === 'completed' && workerScopeCheck.passed && workerArtifactCheck.passed;
 
   for (let idx = 0; idx < contract.acceptance_commands.length; idx++) {
     const commandSpec = normalizeAcceptanceCommand(contract.acceptance_commands[idx], contract.acceptance_timeout || '5m');
     const cmdStr = commandSpec.display;
     const logPath = path.join(artifactDir, `acceptance-cmd-${idx + 1}.log`);
+
+    if (!canRunAcceptance || (idx > 0 && (scopeViolations.length > 0 || !scopeDeterministic))) {
+      acceptanceResults.push({command:cmdStr, exit_code:null, status:'SKIP', log_path:logPath});
+      writeArtifact(logPath, 'Skipped: worker failed or integrity could not be established before execution.\n');
+      continue;
+    }
 
     if (!commandSpec.executable) {
       acceptanceResults.push({
@@ -963,7 +1084,7 @@ OUTPUT INSTRUCTIONS:
         log_path: logPath
       });
       acceptanceAllPassed = false;
-      fs.writeFileSync(logPath, `Command: ${cmdStr}\nExit Code: -1\nError: Empty command string.\n`, 'utf-8');
+      writeArtifact(logPath, `Command: ${cmdStr}\nExit Code: -1\nError: Empty command string.\n`, 'utf-8');
       continue;
     }
 
@@ -998,8 +1119,9 @@ OUTPUT INSTRUCTIONS:
       cmdRun.error ? `--- PROCESS ERROR ---\n${cmdRun.error.code || cmdRun.error.message}` : ''
     ].join('\n');
 
-    fs.writeFileSync(logPath, logContent, 'utf-8');
+    writeArtifact(logPath, logContent, 'utf-8');
 
+    recomputeScope();
     acceptanceResults.push({
       command: cmdStr,
       exit_code: exitCode,
@@ -1013,15 +1135,16 @@ OUTPUT INSTRUCTIONS:
   recomputeScope();
 
   // 7. Determine overall status
-  const scopePassed = scopeViolations.length === 0 && scopeDeterministic;
+  const artifactCheck = checkArtifacts(workerManifest, contract.required_artifacts, artifactDir, workspace);
+  const scopePassed = scopeViolations.length === 0 && scopeDeterministic && workerScopeCheck.passed;
   const manifestCompleted = workerManifest && workerManifest.status === 'completed';
 
   let overallStatus = 'READY_FOR_REVIEW';
   let needsReview = false;
 
-  if (!agySuccess || !manifestCompleted || !scopePassed || !acceptanceAllPassed) {
+  if (!agySuccess || !manifestCompleted || !scopePassed || !acceptanceAllPassed || !artifactCheck.passed || !workerArtifactCheck.passed) {
     overallStatus = 'REJECTED';
-    if (agySuccess && manifestCompleted && acceptanceAllPassed && !scopeDeterministic && scopeViolations.length > 0 && scopeViolations.every(v => v.includes('deterministic scope verification unavailable'))) {
+    if (agySuccess && manifestCompleted && acceptanceAllPassed && artifactCheck.passed && workerArtifactCheck.passed && !scopeDeterministic && scopeViolations.length > 0 && scopeViolations.every(v => v.includes('deterministic scope verification unavailable'))) {
       overallStatus = 'NEEDS_REVIEW';
       needsReview = true;
     }
@@ -1044,9 +1167,30 @@ OUTPUT INSTRUCTIONS:
     : { files_changed: touchedFiles.length, insertions: 0, deletions: 0 };
 
   // 8. Write full receipt JSON artifact
+  const failureText = [agyRun.stderr || '', workerManifest?.summary || '',
+    ...(workerManifest?.uncertainties || [])].join(' ');
+  const failureCategory = overallStatus !== 'REJECTED' ? null
+    : preflight.status !== 'READY' ? 'environment'
+    : agyRun.error?.code === 'ETIMEDOUT' ? 'timeout'
+    : /sign.in|unauthenticated|token exchange|authentication.*(required|failed)/i.test(failureText) ? 'auth'
+    : /unknown model|model.*not.*available|model.*not.*found/i.test(failureText) ? 'model'
+    : !agySuccess ? 'worker' : 'verification';
   const receiptArtifactPath = path.join(artifactDir, 'receipt.json');
   const fullReceipt = {
     version: 'v1',
+    runner_version: '1.3.0',
+    workspace,
+    retry_count: retryCount,
+    contract_scope: {
+      allowed_files:contract.allowed_files, read_scope:contract.read_scope, max_changed_files:contract.max_changed_files,
+      model:contract.model || 'gemini-3.8-flash-high', restrict_tools:contract.restrict_tools || false,
+      forbidden_actions:contract.forbidden_actions, acceptance_commands:contract.acceptance_commands,
+      required_artifacts:contract.required_artifacts || [], task_type:contract.task_type
+    },
+    preflight,
+    worker_scope_check: workerScopeCheck,
+    artifact_check: artifactCheck,
+    failure_category: failureCategory,
     task_id: contract.task_id,
     attempt_id: attemptId,
     task_type: contract.task_type,
@@ -1074,13 +1218,15 @@ OUTPUT INSTRUCTIONS:
       receipt: receiptArtifactPath,
       acceptance_logs: acceptanceResults.map(r => r.log_path)
     },
+    review_files: Object.fromEntries(touchedFiles.filter(f => fs.existsSync(f)).map(f => [f, getFileHash(f)])),
+    review_deleted: touchedFiles.filter(f => !fs.existsSync(f)),
     uncertainties: workerManifest && workerManifest.uncertainties ? workerManifest.uncertainties : [],
     needs_review: needsReview
   };
 
-  fs.writeFileSync(receiptArtifactPath, JSON.stringify(fullReceipt, null, 2), 'utf-8');
+  writeArtifact(receiptArtifactPath, JSON.stringify(fullReceipt, null, 2), 'utf-8');
   const latestReceiptPath = path.join(artifactBaseDir, 'latest.json');
-  fs.writeFileSync(latestReceiptPath, JSON.stringify({
+  writeArtifact(latestReceiptPath, JSON.stringify({
     task_id: contract.task_id,
     attempt_id: attemptId,
     status: overallStatus,
@@ -1113,6 +1259,8 @@ OUTPUT INSTRUCTIONS:
     receipt_path: receiptArtifactPath
   });
 
+  process.exitCode = overallStatus === 'READY_FOR_REVIEW' ? 0 : overallStatus === 'NEEDS_REVIEW' ? 2 : 3;
+
   // 10. Write compact receipt to stdout ONLY (never full response)
   const touchedCompact = compactList(touchedFiles.map(f => path.relative(contract.workspace, f).replace(/\\/g, '/')), 20);
   const dirtyTouchedCompact = compactList(preExistingDirtyTouched.map(f => path.relative(contract.workspace, f).replace(/\\/g, '/')), 10);
@@ -1128,6 +1276,9 @@ OUTPUT INSTRUCTIONS:
     status: overallStatus,
     conversation_id: conversationId,
     summary: workerManifest ? workerManifest.summary : 'No summary available',
+    failure_category: fullReceipt.failure_category,
+    artifact_check: {passed:artifactCheck.passed, errors:artifactCheck.errors.slice(0,5)},
+    retry_count: retryCount,
     scope_check: {
       passed: scopePassed,
       deterministic: scopeDeterministic,

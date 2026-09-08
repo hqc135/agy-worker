@@ -6,7 +6,9 @@
   "properties": {
     "version": {
       "type": "string",
-      "enum": ["v1"],
+      "enum": [
+        "v1"
+      ],
       "description": "Protocol version, must be 'v1'"
     },
     "task_id": {
@@ -38,27 +40,50 @@
     },
     "allowed_files": {
       "type": "array",
-      "items": { "type": "string", "minLength": 1 },
+      "items": {
+        "type": "string",
+        "minLength": 1
+      },
       "description": "List of files or paths the worker is permitted to modify"
     },
     "read_scope": {
       "type": "array",
-      "items": { "type": "string", "minLength": 1 },
+      "items": {
+        "type": "string",
+        "minLength": 1
+      },
       "description": "Files or directories the worker should reference"
     },
     "acceptance_commands": {
       "type": "array",
       "items": {
         "oneOf": [
-          { "type": "string", "minLength": 1 },
+          {
+            "type": "string",
+            "minLength": 1
+          },
           {
             "type": "object",
             "properties": {
-              "executable": { "type": "string", "minLength": 1 },
-              "args": { "type": "array", "items": { "type": "string" } },
-              "timeout": { "type": "string", "pattern": "^(\\d+(\\.\\d+)?(ns|us|µs|ms|s|m|h))+$" }
+              "executable": {
+                "type": "string",
+                "minLength": 1
+              },
+              "args": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "timeout": {
+                "type": "string",
+                "pattern": "^(\\d+(\\.\\d+)?(ns|us|µs|ms|s|m|h))+$"
+              }
             },
-            "required": ["executable", "args"],
+            "required": [
+              "executable",
+              "args"
+            ],
             "additionalProperties": false
           }
         ]
@@ -67,7 +92,10 @@
     },
     "forbidden_actions": {
       "type": "array",
-      "items": { "type": "string", "minLength": 1 },
+      "items": {
+        "type": "string",
+        "minLength": 1
+      },
       "description": "List of actions the worker must not perform"
     },
     "max_changed_files": {
@@ -82,7 +110,9 @@
     },
     "return_mode": {
       "type": "string",
-      "enum": ["compact"],
+      "enum": [
+        "compact"
+      ],
       "description": "Worker output mode; must be 'compact'"
     },
     "model": {
@@ -91,7 +121,10 @@
     },
     "mode": {
       "type": "string",
-      "enum": ["accept-edits", "plan"],
+      "enum": [
+        "accept-edits",
+        "plan"
+      ],
       "description": "Optional execution mode override"
     },
     "timeout": {
@@ -107,6 +140,29 @@
     "conversation_id": {
       "type": "string",
       "description": "Optional conversation ID to resume for precise retry"
+    },
+    "restrict_tools": {
+      "type": "boolean",
+      "default": false,
+      "description": "Use Antigravity permission restrictions instead of unrestricted tools."
+    },
+    "required_artifacts": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      },
+      "description": "Required file paths relative to the current attempt. Each must exist and be declared in worker manifest."
+    },
+    "task_details": {
+      "type": "string",
+      "maxLength": 12000,
+      "description": "Audience/tone/source facts, transformation examples, test behaviors, or specific investigation questions."
+    },
+    "retry_of": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Prior receipt path. Required with conversation_id. At most one same-scope retry; no auth/model/environment retries."
     }
   },
   "required": [

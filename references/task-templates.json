@@ -1,0 +1,7 @@
+{
+  "implementation": "Implement only the requested behavior. State the acceptance criterion and preserve unrelated behavior. If dependencies or scope changes are needed, report blocked instead of broadening the task.",
+  "test_generation": "Cover the specified behaviors and edge cases. Do not change production implementation unless explicitly allowed. Avoid tests that only mirror the implementation or weaken existing assertions. Report commands actually run.",
+  "mechanical_edit": "Apply only the stated transformation rules. Use supplied before/after examples; preserve meaning and unrelated formatting. If a case does not fit the rule, record it as uncertainty rather than guessing.",
+  "documentation": "Follow the specified audience, tone, structure, and source facts. Produce the requested file. Do not invent experience, quotes, measurements, or citations. Separate claims requiring fact checking into uncertainties.",
+  "investigation": "Return a concise conclusion supported by exact file paths and locations. Separate observed facts from hypotheses. Save detailed evidence in the current artifact directory. Do not implement a fix unless explicitly authorized."
+}

@@ -32,6 +32,7 @@ async function main() {
     const fakeAgyPs1 = path.join(testDir, 'fake-agy.ps1');
     const telemetryPath = path.join(testDir, 'telemetry.jsonl');
     process.env.AGY_TELEMETRY_PATH = telemetryPath;
+    process.env.AGY_PREFLIGHT_CACHE = path.join(testDir, 'preflight');
 
     // 1. Create fake agy implementation
     const fakeAgyCode = `
@@ -449,8 +450,9 @@ if (action === 'ALLOWED_EDIT') {
     console.log('[Test 5] Testing semantic review event recording...');
     const reviewRun = spawnSync('node', [
       recordReviewScript,
+      '--receipt', path.join(getAttemptDir(artifactDir1), 'receipt.json'),
       '--task-id', 'task-1-pass',
-      '--verdict', 'pass',
+      '--verdict', 'takeover',
       '--notes', 'Verified changes and test outputs manually.'
     ], {
       encoding: 'utf-8',
@@ -462,7 +464,7 @@ if (action === 'ALLOWED_EDIT') {
     }
 
     const reviewRes = JSON.parse(reviewRun.stdout);
-    if (!reviewRes.recorded || reviewRes.task_id !== 'task-1-pass' || reviewRes.verdict !== 'pass') {
+    if (!reviewRes.recorded || reviewRes.task_id !== 'task-1-pass' || reviewRes.verdict !== 'takeover') {
       throw new Error(`Test 5 unexpected review output: ${reviewRun.stdout}`);
     }
 
@@ -481,7 +483,7 @@ if (action === 'ALLOWED_EDIT') {
       throw new Error(`Expected 1 semantic_review telemetry event, found: ${reviewEvents.length}`);
     }
     const reviewEvent = reviewEvents[0];
-    if (reviewEvent.task_id !== 'task-1-pass' || reviewEvent.verdict !== 'pass' || !reviewEvent.notes.includes('Verified')) {
+    if (reviewEvent.task_id !== 'task-1-pass' || reviewEvent.verdict !== 'takeover' || !reviewEvent.attempt_id || !reviewEvent.receipt_sha256 || !reviewEvent.notes.includes('Verified')) {
       throw new Error(`Semantic review event mismatch: ${JSON.stringify(reviewEvent)}`);
     }
 

@@ -2,12 +2,16 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
+import { digest, fileDigest } from './integrity.mjs';
 
 function parseArgs(args) {
   const parsed = {};
   for (let i = 0; i < args.length; i++) {
     const arg = args[i];
-    if (arg === '--task-id') {
+    if (arg === '--receipt') {
+      parsed.receipt = args[++i];
+      if (!parsed.receipt) throw new Error('Missing value for --receipt.');
+    } else if (arg === '--task-id') {
       parsed.taskId = args[++i];
       if (!parsed.taskId) throw new Error('Missing value for --task-id.');
     } else if (arg.startsWith('--task-id=')) {
@@ -35,7 +39,7 @@ try {
   process.exit(1);
 }
 
-if (!args.taskId || typeof args.taskId !== 'string' || !/^[a-zA-Z0-9_-]+$/.test(args.taskId.trim())) {
+if (args.taskId && (typeof args.taskId !== 'string' || !/^[a-zA-Z0-9_-]+$/.test(args.taskId.trim()))) {
   process.stderr.write('Error: --task-id must use only letters, numbers, dash, and underscore.\n');
   process.exit(1);
 }
@@ -46,7 +50,31 @@ if (!args.verdict || !validVerdicts.includes(args.verdict.toLowerCase())) {
   process.exit(1);
 }
 
-const taskId = args.taskId.trim();
+let receipt, receiptBytes, receiptPath;
+try {
+  if (!args.receipt) throw new Error('--receipt is required to bind the review to an attempt.');
+  receiptPath = path.resolve(args.receipt);
+  receiptBytes = fs.readFileSync(receiptPath);
+  receipt = JSON.parse(receiptBytes);
+  if (!receipt.task_id || !receipt.attempt_id || !receipt.workspace || !receipt.review_files || !receipt.artifact_check)
+    throw new Error('Receipt lacks attempt evidence; use runner 1.3 or later.');
+  if (args.taskId && args.taskId !== receipt.task_id) throw new Error('Task ID does not match receipt.');
+  if (args.verdict.toLowerCase() === 'pass') {
+    if (!['READY_FOR_REVIEW','NEEDS_REVIEW'].includes(receipt.status))
+      throw new Error('A rejected attempt cannot be marked pass.');
+    for (const [file, expected] of Object.entries({...receipt.review_files, ...receipt.artifact_check.hashes})) {
+      if (!expected || fileDigest(file, receipt.workspace) !== expected)
+        throw new Error('Reviewed file changed since receipt: ' + file);
+    }
+    for (const file of receipt.review_deleted || []) {
+      if (fs.existsSync(file)) throw new Error('Deleted file was recreated: ' + file);
+    }
+  }
+} catch (err) {
+  process.stderr.write('Review rejected: ' + err.message + '\n');
+  process.exit(1);
+}
+const taskId = receipt.task_id;
 const verdict = args.verdict.toLowerCase();
 
 // Cap notes to 200 chars and enforce single-line
@@ -61,6 +89,9 @@ if (args.notes && typeof args.notes === 'string') {
 const telemetryEvent = {
   timestamp: new Date().toISOString(),
   event_type: 'semantic_review',
+  attempt_id: receipt.attempt_id,
+  receipt_path: receiptPath,
+  receipt_sha256: digest(receiptBytes),
   task_id: taskId,
   verdict: verdict,
   notes: sanitizedNotes
@@ -76,6 +107,7 @@ try {
 
   process.stdout.write(JSON.stringify({
     recorded: true,
+    attempt_id: receipt.attempt_id,
     task_id: taskId,
     verdict: verdict
   }, null, 2) + '\n');

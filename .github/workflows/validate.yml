@@ -18,3 +18,9 @@ jobs:
       - name: Validate with PowerShell 7
         shell: pwsh
         run: ./tests/test-static.ps1
+      - name: Contract regression tests
+        shell: pwsh
+        run: node ./scripts/test-regression.mjs
+      - name: Integrity and process lifecycle tests
+        shell: pwsh
+        run: node ./scripts/test-hardening.mjs
