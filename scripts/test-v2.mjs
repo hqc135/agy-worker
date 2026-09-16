@@ -19,7 +19,9 @@ test('brief creates compatible bounded contract and writing deliverable',()=>fix
   const c=prepareContract({workspace,task_type:'documentation',goal:'Write supplied facts'});
   assert.equal(c.version,'v1');assert.deepEqual(c.allowed_files,[]);
   assert.equal(c.max_changed_files,0);assert.deepEqual(c.required_artifacts,['draft.md']);
-  assert.equal(c.artifact_dir,path.join(workspace,'.agy-artifacts',c.task_id));
+  const canonicalWorkspace=fs.realpathSync.native(workspace);
+  assert.equal(c.workspace,canonicalWorkspace);
+  assert.equal(c.artifact_dir,path.join(canonicalWorkspace,'.agy-artifacts',c.task_id));
   const edit=prepareContract({workspace,task_type:'mechanical_edit',goal:'Change exact files',allowed_files:['a.txt','b.txt']});
   assert.equal(edit.max_changed_files,2);
   assert.throws(()=>prepareContract({workspace,task_type:'implementation',goal:'x',allowed_files:['src/**']}),/max_changed_files/);
