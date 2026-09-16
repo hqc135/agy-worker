@@ -6,9 +6,11 @@ import crypto from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { fileDigest, plainPath, evidenceSnapshot, checkArtifacts } from './integrity.mjs';
+import {stateContext, acquireLease, claimRetry} from './task-lifecycle.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
+let releaseLease;
 
 function parseArgs(args) {
   const parsed = {};
@@ -205,7 +207,7 @@ function spawnAcceptance(executable, commandArgs, options) {
   return runManaged(executable, commandArgs, options);
 }
 
-function validateContract(contract) {
+export function validateContract(contract) {
   if (!contract || typeof contract !== 'object') {
     throw new Error('Contract must be a valid JSON object.');
   }
@@ -724,12 +726,15 @@ async function main() {
   contract.workspace = workspace;
   const artifactBaseDir = path.resolve(workspace, path.relative(suppliedWorkspace, suppliedArtifacts));
   contract.artifact_dir = artifactBaseDir;
+  const lifecycle = stateContext(workspace);
+  releaseLease = acquireLease(lifecycle, contract.task_id);
   const attemptId = `attempt-${new Date().toISOString().replace(/[:.]/g, '-')}-${crypto.randomBytes(3).toString('hex')}`;
   const artifactDir = path.join(artifactBaseDir, attemptId);
   plainPath(artifactDir, workspace);
   fs.mkdirSync(artifactDir, { recursive: true });
   const previousEvidence = evidenceSnapshot(artifactBaseDir, artifactDir, workspace);
   let retryCount = 0;
+  let priorReceipt = null;
   if (contract.retry_of) {
     const prior = JSON.parse(fs.readFileSync(path.resolve(contract.retry_of), 'utf8'));
     if (prior.task_id !== contract.task_id || prior.workspace !== workspace ||
@@ -738,12 +743,15 @@ async function main() {
     retryCount = (prior.retry_count || 0) + 1;
     if (retryCount > 1 || ['auth','environment','model'].includes(prior.failure_category))
       throw new Error('Retry budget exhausted or environment/auth/model failure: Codex must take over.');
+    if (!prior.contract_scope?.mode)
+      throw new Error('Prior receipt lacks V2 execution-mode evidence; Codex must review before starting a new independent task.');
     if (JSON.stringify(prior.contract_scope) !== JSON.stringify({
       allowed_files:contract.allowed_files, read_scope:contract.read_scope, max_changed_files:contract.max_changed_files,
       model:contract.model || 'gemini-3.8-flash-high', restrict_tools:contract.restrict_tools || false,
       forbidden_actions:contract.forbidden_actions, acceptance_commands:contract.acceptance_commands,
-      required_artifacts:contract.required_artifacts || [], task_type:contract.task_type
+      required_artifacts:contract.required_artifacts || [], task_type:contract.task_type, mode:contract.mode || 'accept-edits'
     })) throw new Error('A retry may not change scope, permissions, model, or acceptance checks.');
+    priorReceipt = prior;
   }
   const writeArtifact = (target, content) => {
     plainPath(target, workspace);
@@ -872,6 +880,10 @@ OUTPUT INSTRUCTIONS:
   });
   let preflight;
   try { preflight = JSON.parse(preflightRun.stdout); } catch { preflight = {status:'FAILED'}; }
+  // A failed local preflight has not dispatched a worker and does not consume a retry.
+  // Once claimed, crashes or ambiguous dispatch must not allow another automatic retry.
+  const retryClaim = priorReceipt && preflightRun.status === 0 && preflight.status === 'READY'
+    ? claimRetry(lifecycle, priorReceipt, attemptId) : null;
   const agyRun = preflightRun.status !== 0 || preflight.status !== 'READY'
     ? {status:1, stdout:'', stderr:preflightRun.stderr || 'Preflight failed', error:preflightRun.error}
     : runManaged(psExe, psArgs, {
@@ -1184,14 +1196,15 @@ OUTPUT INSTRUCTIONS:
   const receiptArtifactPath = path.join(artifactDir, 'receipt.json');
   const fullReceipt = {
     version: 'v1',
-    runner_version: '1.3.0',
+    runner_version: '2.0.0',
+    retry_claim_path: retryClaim,
     workspace,
     retry_count: retryCount,
     contract_scope: {
       allowed_files:contract.allowed_files, read_scope:contract.read_scope, max_changed_files:contract.max_changed_files,
       model:contract.model || 'gemini-3.8-flash-high', restrict_tools:contract.restrict_tools || false,
       forbidden_actions:contract.forbidden_actions, acceptance_commands:contract.acceptance_commands,
-      required_artifacts:contract.required_artifacts || [], task_type:contract.task_type
+      required_artifacts:contract.required_artifacts || [], task_type:contract.task_type, mode:contract.mode || 'accept-edits'
     },
     preflight,
     worker_scope_check: workerScopeCheck,
@@ -1313,7 +1326,9 @@ OUTPUT INSTRUCTIONS:
   });
 }
 
-main().catch(err => {
+if (process.argv[1] && normalizePath(process.argv[1]) === normalizePath(__filename)) main().finally(() => {
+  if (releaseLease) releaseLease();
+}).catch(err => {
   process.stderr.write(`Fatal error: ${err.stack || err.message}\n`);
-  process.exit(1);
+  process.exitCode = 1;
 });

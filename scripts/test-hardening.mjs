@@ -40,6 +40,7 @@ const fake = "\nimport fs from 'node:fs';\nimport path from 'node:path';\nimport
 try {
  process.env.AGY_TELEMETRY_PATH=path.join(root,'telemetry.jsonl');
  process.env.AGY_PREFLIGHT_CACHE=path.join(root,'preflight');
+ process.env.AGY_STATE_DIR=path.join(root,'state');
  fs.writeFileSync(path.join(root,'fake.mjs'),fake);
  fs.writeFileSync(path.join(root,'fake.ps1'),'& node "$PSScriptRoot/fake.mjs" @args\n');
  let c=fixture();
@@ -85,12 +86,17 @@ try {
  output('task-specific guidance reaches worker',()=>{assert.equal(r.status,0,r.stderr);});
  c=fixture();r=run(c);
  c.retry_of=r.receipt.receipt_path;c.conversation_id=r.receipt.conversation_id;
+ const originalRetryParent=c.retry_of;
  r=run(c);
  output('one exact retry is allowed',()=>{assert.equal(r.status,0,r.stderr);assert.equal(r.full.retry_count,1);});
+ const repeated=run({...c,retry_of:originalRetryParent});
+ output('same original receipt cannot be retried twice',()=>{assert.equal(repeated.status,1);assert.match(repeated.stderr,/budget exhausted/);});
  c.retry_of=r.receipt.receipt_path;r=run(c);
  output('second retry stops before worker',()=>{assert.equal(r.status,1);assert.match(r.stderr,/budget exhausted/);});
  c=fixture();r=run(c);c.retry_of=r.receipt.receipt_path;c.conversation_id=r.receipt.conversation_id;c.allowed_files=['source.txt'];r=run(c);
  output('retry cannot broaden scope',()=>{assert.equal(r.status,1);assert.match(r.stderr,/may not change scope/);});
+ c=fixture();r=run(c);c.retry_of=r.receipt.receipt_path;c.conversation_id=r.receipt.conversation_id;c.mode='plan';r=run(c);
+ output('retry cannot change execution mode',()=>{assert.equal(r.status,1);assert.match(r.stderr,/may not change scope/);});
  c=fixture();r=run(c);r=run(c);
  output('local CLI preflight cache is reused',()=>{assert.equal(r.status,0,r.stderr);assert.equal(r.full.preflight.cache_hit,true);});
  c=fixture();c.timeout='5s';r=run(c,'TREE');

@@ -21,6 +21,9 @@ jobs:
       - name: Contract regression tests
         shell: pwsh
         run: node ./scripts/test-regression.mjs
+      - name: V2 lifecycle and brief tests
+        shell: pwsh
+        run: node --test ./scripts/test-v2.mjs
       - name: Integrity and process lifecycle tests
         shell: pwsh
         run: node ./scripts/test-hardening.mjs

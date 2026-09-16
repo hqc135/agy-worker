@@ -6,6 +6,19 @@
 
 这个项目由一个 Codex Skill 和一个确定性的 PowerShell 包装脚本组成。它**不是** OpenAI 兼容反向代理，也不会把 Gemini 添加到 Codex 的模型选择器中。
 
+## V2：少写参数，补齐执行协调
+
+Runner 升级为 2.0，但仍兼容 `version: "v1"` 契约。新任务可用 `scripts/prepare-task.mjs` 把简短 JSON 任务说明展开为完整契约，不调用 Gemini、不改项目设置、不覆盖已有契约。[SKILL.md](SKILL.md) 提供示例，[完整契约参考](references/contract-runner.md) 保留高级参数。
+
+- 不自动扩大权限：项目写入仍需显式 `allowed_files`，目录或 glob 范围必须明确 `max_changed_files`。
+- 共享 Git common directory 的托管任务互斥执行，包括子目录和关联 worktree。忙时立即报错，不排队；旧包装器/直接调用 CLI 不参与锁。
+- 每个原始 attempt 只有一个持久重试名额。复制或反复引用旧回执不能再次重试。发起调用后中断也占用名额；本地预检失败不占用。
+- V2 重试也绑定执行模式。旧完整契约仍能运行，但旧回执缺少模式证据，不能直接用于精确重试；须由 Codex 先审查结果，再决定是否启动新的独立任务。
+- `node scripts/task-state.mjs --workspace <路径>` 查看锁信息和历史重试占用数，不调用模型。
+- 状态位于 `~/.config/agy-worker/state`。测试可用 `AGY_STATE_DIR` 隔离，但正常使用不应反复切换，且必须放在仓库外。中断留下的锁需确认相关 worker 已停止后，才能删除那个锁文件，不自动抢占。
+
+这是本 runner 的正确性保护，不是沙箱或调度平台。V2 不增加浏览器委托、自动 Git 操作、并行执行、自动修登录，也不改变默认模型或权限。托管 runner 仍仅支持 Windows。除原有测试外，新增 `node --test scripts/test-v2.mjs`。skill 首页缩短，旧契约和审稿命令继续兼容。
+
 ## 为什么做这个项目
 
 不少编码任务并不需要主 Agent 全程亲自处理，例如机械性修改、测试脚手架、文档整理、窄范围代码搜索和小型迁移。AGY Worker 让 Codex 继续担任负责人，同时把这些工作交给 Antigravity 中可用的模型执行。

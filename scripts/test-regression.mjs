@@ -33,6 +33,7 @@ async function main() {
     const telemetryPath = path.join(testDir, 'telemetry.jsonl');
     process.env.AGY_TELEMETRY_PATH = telemetryPath;
     process.env.AGY_PREFLIGHT_CACHE = path.join(testDir, 'preflight');
+    process.env.AGY_STATE_DIR = path.join(testDir, 'state');
 
     // 1. Create fake agy implementation
     const fakeAgyCode = `

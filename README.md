@@ -6,6 +6,19 @@ Delegate small, verifiable coding chores from Codex to Google's official Antigra
 
 This project is a Codex Skill and a deterministic PowerShell wrapper. It is **not** an OpenAI-compatible reverse proxy and it does not add Gemini to the Codex model picker.
 
+## V2: less setup, durable execution coordination
+
+Runner 2.0 keeps the existing `version: "v1"` protocol compatible. New tasks can use a short brief via `scripts/prepare-task.mjs`; it validates and expands defaults without starting Gemini, changing settings or overwriting contracts. See [SKILL.md](SKILL.md) for an example and [the full contract reference](references/contract-runner.md) for advanced fields.
+
+- No implicit edit scope: project writes still require `allowed_files`; directories/globs require an explicit change-count limit.
+- Managed runs sharing a Git common directory are serialized, including linked worktrees. Busy invocations stop immediately; legacy wrapper/direct CLI runs are not coordinated.
+- One persistent retry claim per original attempt prevents repeated reuse of an old receipt. Claims survive interrupted dispatch; local preflight failure does not consume a claim.
+- V2 retries bind execution mode too. Old full contracts still run, but pre-V2 receipts cannot authorize a precise retry because they lack mode evidence; Codex must review the result before choosing a new independent task.
+- `node scripts/task-state.mjs --workspace <path>` inspects active-lock metadata and retry-claim count without running a model.
+- State lives under `~/.config/agy-worker/state`. `AGY_STATE_DIR` can isolate tests but must remain stable for normal use and stay outside the repo. Crash locks require confirming associated workers have stopped before removing that exact lock; no automatic stale-lock deletion.
+
+These are cooperative correctness guards, not a sandbox or scheduler. V2 does not add browser delegation, automatic Git operations, parallel execution, automatic login repair or different default permissions. The managed runner remains Windows-only. Run `node --test scripts/test-v2.mjs` alongside existing regression/hardening tests.
+
 ## Why this exists
 
 Coding agents are often overqualified for mechanical work: repetitive edits, test scaffolding, documentation cleanup, narrow code searches, and similar chores. AGY Worker lets Codex remain the lead agent while using an available Antigravity model as a junior worker.
