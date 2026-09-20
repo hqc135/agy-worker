@@ -56,12 +56,15 @@ export function acquireLease(context, taskId) {
     fs.unlinkSync(context.lockPath);
   };
 }
-export function claimRetry(context, prior, attemptId) {
+export function retryClaimPath(context, prior) {
   if (!prior.attempt_id || !prior.task_id || !prior.workspace) throw new Error('Retry receipt lacks original attempt identity.');
   const retryKey = digest(JSON.stringify([normalize(fs.realpathSync.native(prior.workspace)), prior.task_id, prior.attempt_id]));
   const directory = path.join(context.directory, 'retries');
-  fs.mkdirSync(directory, {recursive:true});
-  const file = path.join(directory, retryKey + '.json');
+  return path.join(directory, retryKey + '.json');
+}
+export function claimRetry(context, prior, attemptId) {
+  const file = retryClaimPath(context, prior);
+  fs.mkdirSync(path.dirname(file), {recursive:true});
   try {
     createExclusive(file, {parent_attempt_id:prior.attempt_id, attempt_id:attemptId,
       task_id:prior.task_id, claimed_at:new Date().toISOString()});

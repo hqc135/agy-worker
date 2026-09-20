@@ -26,19 +26,24 @@ try{
   const contractPath=path.join(temp,'contract.json');
   fs.writeFileSync(contractPath,JSON.stringify(contract));
   const start=Date.now();
-  const run=spawnSync(process.execPath,[path.join(repo,'scripts','invoke-agy-task.mjs'),'--contract',contractPath],{
+  const run=spawnSync(process.execPath,[path.join(repo,'scripts','agy-worker.mjs'),'run','--contract',contractPath],{
     encoding:'utf8',windowsHide:true,timeout:180000,
     env:{...process.env,AGY_STATE_DIR:path.join(temp,'state'),AGY_PREFLIGHT_CACHE:path.join(temp,'preflight'),AGY_TELEMETRY_PATH:path.join(temp,'telemetry.jsonl')}
   });
   if(run.status!==0) throw new Error('Live run failed: '+run.status+' '+run.stderr+' '+run.stdout);
   const compact=JSON.parse(run.stdout);
   const receipt=JSON.parse(fs.readFileSync(compact.receipt_path,'utf8'));
-  assert.equal(receipt.runner_version,'2.0.0');
+  assert.equal(receipt.runner_version,'2.2.0');
+  assert.equal(compact.diagnostic,null);
+  assert.equal(compact.worker_dispatched,true);
+  assert.ok(receipt.timings.worker_ms>0);
+  assert.equal(receipt.contract_snapshot.goal,contract.goal);
+  assert.ok(fs.existsSync(receipt.artifacts.raw_preflight_output));
   assert.equal(receipt.scope_check.passed,true);
   const draft=path.join(path.dirname(compact.receipt_path),'draft.md');
   assert.equal(fs.readFileSync(draft,'utf8').trim(),'AGY_V2_OK');
   console.log(JSON.stringify({live_test:'PASS',runner_version:receipt.runner_version,model:contract.model||'gemini-3.8-flash-high',
-    duration_ms:Date.now()-start,scope_passed:true,artifact_verified:true}));
+    duration_ms:Date.now()-start,timings:receipt.timings,scope_passed:true,artifact_verified:true}));
 }finally{
   // This test owns only this freshly allocated temporary fixture.
   fs.rmSync(temp,{recursive:true,force:true});

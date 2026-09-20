@@ -260,8 +260,9 @@ if ($result.status -eq 'SUCCESS' -and [string]::IsNullOrWhiteSpace([string]$resu
     [Console]::Error.WriteLine('Warning: agy reported SUCCESS with an empty response. Inspect workspace changes before retrying.')
 }
 
+# Preserve structured failure evidence for the managed runner before raising.
+# The caller still receives a failing process/terminating error, never success.
+$result | ConvertTo-Json -Depth 100
 if ($agyExitCode -ne 0) {
     throw "agy exited with code $agyExitCode."
 }
-
-$result | ConvertTo-Json -Depth 100

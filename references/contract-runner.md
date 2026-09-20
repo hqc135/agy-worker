@@ -12,7 +12,7 @@ Use the official `agy` CLI as a junior worker. Keep Codex responsible for scope,
 
 ---
 
-## Primary Route: V1 Task Contract Runner (implementation 2.0)
+## Primary Route: V1 Task Contract Runner (implementation 2.2)
 
 Prefer the deterministic V1 contract runner for all implementation, mechanical edit, documentation, and test generation chores.
 
@@ -140,3 +140,31 @@ Retained for quick read-only questions, broad exploration, or backwards compatib
 - Use `-Mode plan` for read-only investigation.
 - Windows proxy auto-detection is active unless `-NoSystemProxy` or `-ProxyUrl` is supplied.
 - Always inspect the worktree and run tests directly when using the legacy wrapper.
+
+## V2.1 diagnostics and retry preparation
+
+The contract schema remains `v1`. Since V2.1, full receipts record the installed `runner_version`, a validated `contract_snapshot`, and `artifacts.raw_preflight_output`. The snapshot and raw logs remain in the local full receipt/attempt directory; they are not reinjected into the compact response. V2.2 adds a receipt SHA-256 and retry count to execution telemetry for [local statistics](usage-and-stats.md), without changing the task contract.
+
+Compact receipts and execution telemetry include:
+
+- `diagnostic`: `null` for a clean machine result, otherwise `stage`, `code`, `next_action`, and `evidence`. This is the primary actionable issue, not an exhaustive list: inspect the existing scope, artifact and acceptance gates too.
+- `timings`: `setup_ms`, `preflight_ms`, `worker_ms`, `acceptance_ms`, `verification_ms`, and `total_before_receipt_ms`. Durations are local wall-clock milliseconds, not model inference time. Verification includes output parsing and local evidence writes but excludes acceptance process durations. Receipt/telemetry writing is excluded from `total_before_receipt_ms`; telemetry's existing `duration_ms` includes receipt writing.
+- `worker_dispatched`: whether worker-process launch was attempted after preflight. It does not prove a model request reached Google or consumed tokens. A false value and zero worker time distinguish local preflight failure.
+
+Executed acceptance commands also record `duration_ms` and `process_error` in the full receipt. Skipped commands have no process duration. Before a receipt is available, fatal errors emit a compact diagnostic JSON line on stderr followed by the local error details; exit code remains 1.
+
+Typical codes: `PREFLIGHT_TIMEOUT`, `CLI_NOT_FOUND`, `PROXY_UNREACHABLE`, `PROXY_INVALID`, `PREFLIGHT_FAILED`, `PREFLIGHT_OUTPUT_INVALID`, `WORKER_TIMEOUT`, `WORKER_PROCESS_ERROR`, `WORKER_EXIT_FAILED`, `WORKER_OUTPUT_INVALID`, `WORKER_REPORTED_FAILURE`, `AUTH_FAILED`, `MODEL_UNAVAILABLE`, `ACCEPTANCE_TIMEOUT`, `ACCEPTANCE_FAILED`, `SCOPE_NOT_VERIFIED`, `ARTIFACT_NOT_VERIFIED`, `REVIEW_REQUIRED`, `VERIFICATION_FAILED`, `WORKSPACE_BUSY`, `RETRY_EXHAUSTED`, `RECEIPT_WRITE_FAILED`, and fallback `RUNNER_ERROR`.
+
+Text-derived auth/model/wrapper hints are explicitly marked `failure_text` or `wrapper_text`; they are heuristics, not typed upstream API guarantees. Their messages never echo raw failure text. Unknown failures remain generic. Successful prose mentioning authentication is not an auth failure. No diagnostic repairs login, changes proxies/models, or runs an automatic retry.
+
+For a semantic correction, save specific feedback in a UTF-8 text file, then run:
+
+```powershell
+node scripts/prepare-retry.mjs --receipt "C:/tasks/attempt/receipt.json" --feedback-file "C:/tasks/correction.txt" --out "C:/tasks/retry.json"
+```
+
+The helper copies the complete V2.1 contract snapshot, preserving scope, permissions, model, execution mode, timeouts, artifact base and acceptance checks. It adds the verified conversation ID and receipt path, and appends feedback to `task_details`. The total task-details cap still applies; oversized feedback is rejected, never truncated. It refuses output overwrite, missing/inconsistent evidence, blocked auth/environment/model failures, second retries, and an existing persistent retry claim.
+
+Preparation does not start Gemini, write coordination state, or reserve/consume a retry. Multiple draft contracts do not grant multiple attempts. Codex must inspect the generated contract, then invoke `invoke-agy-task.mjs` normally; that runner validates the parent again, acquires the shared lock, and claims the retry after successful preflight. Another process can consume the claim between preparation and execution, in which case dispatch is refused.
+
+V2.0 receipts lack a complete snapshot, so this helper refuses them. The existing manual V2 same-scope retry route remains available for receipts with mode evidence; do not guess missing fields. Receipt and state validation are cooperative integrity checks, not protection against an unrestricted process deliberately tampering with evidence.

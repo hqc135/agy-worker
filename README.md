@@ -6,7 +6,32 @@ Delegate small, verifiable coding chores from Codex to Google's official Antigra
 
 This project is a Codex Skill and a deterministic PowerShell wrapper. It is **not** an OpenAI-compatible reverse proxy and it does not add Gemini to the Codex model picker.
 
-## V2: less setup, durable execution coordination
+## V2.2: one entrypoint and honest local statistics
+
+Use `node scripts/agy-worker.mjs` with `prepare`, `run`, `retry`, `state`, `review`, or `stats`. The existing scripts remain compatible; no global command, new dependency or account setup is required. Only `run` starts Gemini. `retry` prepares a contract and `review --verdict retry` records a decision; neither executes a retry.
+
+```powershell
+node scripts/agy-worker.mjs --help
+node scripts/agy-worker.mjs stats --since 2026-09-01 --task-type documentation
+```
+
+Statistics read the existing local telemetry and separate machine readiness from recorded Codex approval, with review coverage, latency, reported token samples and retry counts. Missing data stays unknown. V2.2 records execution receipt hashes so reviews can be matched; older unbound reviews are shown separately, not counted as verified passes. No prompts, notes or identifiers are printed by the report. It neither changes settings nor estimates money/GPT tokens saved. See [entrypoint and metric definitions](references/usage-and-stats.md), including filters, duplicate/conflict handling and the 32 MiB read limit.
+
+The default remains Flash High with the existing permissions and one-retry boundary. Windows process supervision is unchanged. Run `node --test scripts/test-v22.mjs` alongside earlier suites.
+
+## V2.1 foundation: actionable diagnostics and simpler precise retries
+
+Runner 2.1 preserves the `v1` contract and existing V2 coordination. Compact receipts now separate preflight, worker, acceptance and verification failures, with reason codes, concise next steps and stage timings. Full preflight logs and contract snapshots stay in local attempt artifacts; raw output is not fed back into Codex. Auth/model diagnoses derived from error text are hints, not guarantees.
+
+For an editorial or semantic correction, generate a same-scope retry without launching Gemini:
+
+```powershell
+node scripts/prepare-retry.mjs --receipt "C:/tasks/attempt/receipt.json" --feedback-file "C:/tasks/correction.txt" --out "C:/tasks/retry.json"
+```
+
+Review the result, then execute it with the normal contract runner. The helper preserves model, permissions, scope, timeouts and acceptance checks; it does not consume or reserve a retry. Missing V2.1 snapshots, exhausted retries, blocked auth/environment/model failures and output overwrites are rejected. Actual dispatch still enforces the one-retry budget. No automatic login/proxy repair, model switching or browser delegation is added. See [diagnostics and retry details](references/contract-runner.md#v21-diagnostics-and-retry-preparation). Run `node --test scripts/test-v21.mjs` alongside the V2, regression and hardening suites.
+
+## V2 foundation: less setup, durable execution coordination
 
 Runner 2.0 keeps the existing `version: "v1"` protocol compatible. New tasks can use a short brief via `scripts/prepare-task.mjs`; it validates and expands defaults without starting Gemini, changing settings or overwriting contracts. See [SKILL.md](SKILL.md) for an example and [the full contract reference](references/contract-runner.md) for advanced fields.
 

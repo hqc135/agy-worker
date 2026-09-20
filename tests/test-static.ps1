@@ -19,10 +19,18 @@ $requiredFiles = @(
     'scripts/task-state.mjs',
     'scripts/prepare-task.mjs',
     'scripts/test-v2.mjs',
+    'scripts/test-v21.mjs',
+    'scripts/prepare-retry.mjs',
+    'scripts/diagnostics.mjs',
+    'scripts/agy-worker.mjs',
+    'scripts/task-stats.mjs',
+    'scripts/version.mjs',
+    'scripts/test-v22.mjs',
     'references/task-templates.json',
     'references/task-contract.schema.json',
     'references/worker-manifest.schema.json',
     'references/task-types.md',
+    'references/usage-and-stats.md',
     'README.md',
     'README.zh-CN.md',
     'LICENSE'
@@ -80,7 +88,7 @@ foreach ($schemaName in @('task-contract.schema.json', 'worker-manifest.schema.j
 
 $node = Get-Command node -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
 if ($node) {
-    foreach ($scriptName in @('invoke-agy-task.mjs', 'record-review.mjs', 'test-regression.mjs', 'test-hardening.mjs', 'integrity.mjs', 'task-lifecycle.mjs', 'task-state.mjs', 'prepare-task.mjs', 'test-v2.mjs')) {
+    foreach ($scriptName in @('invoke-agy-task.mjs', 'record-review.mjs', 'test-regression.mjs', 'test-hardening.mjs', 'integrity.mjs', 'task-lifecycle.mjs', 'task-state.mjs', 'prepare-task.mjs', 'test-v2.mjs', 'test-v21.mjs', 'prepare-retry.mjs', 'diagnostics.mjs', 'agy-worker.mjs', 'task-stats.mjs', 'version.mjs', 'test-v22.mjs')) {
         & $node.Path --check (Join-Path $repoRoot "scripts/$scriptName")
         if ($LASTEXITCODE -ne 0) {
             throw "Node syntax validation failed: scripts/$scriptName"

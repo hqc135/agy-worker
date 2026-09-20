@@ -24,6 +24,12 @@ jobs:
       - name: V2 lifecycle and brief tests
         shell: pwsh
         run: node --test ./scripts/test-v2.mjs
+      - name: V2.1 diagnostics and retry preparation tests
+        shell: pwsh
+        run: node --test ./scripts/test-v21.mjs
+      - name: V2.2 unified entrypoint and statistics tests
+        shell: pwsh
+        run: node --test ./scripts/test-v22.mjs
       - name: Integrity and process lifecycle tests
         shell: pwsh
         run: node ./scripts/test-hardening.mjs

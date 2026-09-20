@@ -7,10 +7,13 @@ import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { fileDigest, plainPath, evidenceSnapshot, checkArtifacts } from './integrity.mjs';
 import {stateContext, acquireLease, claimRetry} from './task-lifecycle.mjs';
+import {diagnose, diagnoseFatal} from './diagnostics.mjs';
+import {VERSION} from './version.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 let releaseLease;
+let activeStage = 'setup';
 
 function parseArgs(args) {
   const parsed = {};
@@ -697,14 +700,12 @@ async function main() {
   const args = parseArgs(process.argv.slice(2));
 
   if (!args.contract) {
-    process.stderr.write('Error: Missing required --contract <path> parameter.\n');
-    process.exit(1);
+    throw new Error('Missing required --contract <path> parameter.');
   }
 
   const contractPath = path.resolve(process.cwd(), args.contract);
   if (!fs.existsSync(contractPath)) {
-    process.stderr.write(`Error: Contract file not found: ${contractPath}\n`);
-    process.exit(1);
+    throw new Error(`Contract file not found: ${contractPath}`);
   }
 
   let contract;
@@ -713,8 +714,7 @@ async function main() {
     contract = JSON.parse(rawContract);
     validateContract(contract);
   } catch (err) {
-    process.stderr.write(`Error parsing contract: ${err.message}\n`);
-    process.exit(1);
+    throw new Error(`Error parsing contract: ${err.message}`);
   }
 
   const suppliedWorkspace = path.resolve(contract.workspace);
@@ -875,15 +875,27 @@ OUTPUT INSTRUCTIONS:
     psArgs.push('-AgyPath', path.resolve(effectiveAgyPath));
   }
 
+  const preflightStart = Date.now();
+  activeStage = 'preflight';
+  const timings = {setup_ms:preflightStart-startTime};
   const preflightRun = runManaged(psExe, [...psArgs, '-PreflightOnly'], {
     cwd: workspace, encoding:'utf8', windowsHide:true, timeout:15000, maxBuffer:2*1024*1024
   });
   let preflight;
+  timings.preflight_ms = Date.now()-preflightStart;
   try { preflight = JSON.parse(preflightRun.stdout); } catch { preflight = {status:'FAILED'}; }
+  if (!preflight || typeof preflight !== 'object' || Array.isArray(preflight)) preflight = {status:'FAILED'};
+  const rawPreflightPath = path.join(artifactDir,'preflight-output.json');
+  writeArtifact(rawPreflightPath, JSON.stringify({exit_code:preflightRun.status,signal:preflightRun.signal,
+    process_error:preflightRun.error?.code || null,stdout:preflightRun.stdout || '',stderr:preflightRun.stderr || ''},null,2));
   // A failed local preflight has not dispatched a worker and does not consume a retry.
   // Once claimed, crashes or ambiguous dispatch must not allow another automatic retry.
+  activeStage = 'coordination';
   const retryClaim = priorReceipt && preflightRun.status === 0 && preflight.status === 'READY'
     ? claimRetry(lifecycle, priorReceipt, attemptId) : null;
+  const workerDispatched = preflightRun.status === 0 && preflight.status === 'READY';
+  activeStage = workerDispatched ? 'worker' : 'preflight';
+  const workerStart = Date.now();
   const agyRun = preflightRun.status !== 0 || preflight.status !== 'READY'
     ? {status:1, stdout:'', stderr:preflightRun.stderr || 'Preflight failed', error:preflightRun.error}
     : runManaged(psExe, psArgs, {
@@ -895,6 +907,9 @@ OUTPUT INSTRUCTIONS:
     killSignal: 'SIGTERM'
   });
 
+  timings.worker_ms = workerDispatched ? Date.now()-workerStart : 0;
+  const verificationStart = Date.now();
+  activeStage = 'verification';
   // 4. Save raw agy JSON result under artifact directory
   const rawAgyArtifactPath = path.join(artifactDir, 'raw-agy-output.json');
   writeArtifact(rawAgyArtifactPath, JSON.stringify({
@@ -909,6 +924,7 @@ OUTPUT INSTRUCTIONS:
   let workerManifest = null;
   let conversationId = contract.conversation_id || null;
   let agySuccess = false;
+  let outputValid = false;
 
   try {
     agyParsed = JSON.parse(agyRun.stdout);
@@ -925,21 +941,14 @@ OUTPUT INSTRUCTIONS:
       if (typeof agyParsed.response === 'string') {
         workerManifest = extractJsonManifest(agyParsed.response);
         if (!workerManifest) {
-          workerManifest = {
-            status: 'failed',
-            summary: 'Worker response could not be parsed as JSON manifest.',
-            changed_files: [],
-            commands_run: [],
-            artifacts: [],
-            uncertainties: ['Malformed response from worker model.'],
-            needs_review: true
-          };
+          throw new Error('Worker response could not be parsed as JSON manifest.');
         }
       } else if (typeof agyParsed.response === 'object') {
         workerManifest = agyParsed.response;
       }
     }
     const manifestErrors = validateWorkerManifest(workerManifest);
+    outputValid = manifestErrors.length === 0;
     if (manifestErrors.length > 0) {
       workerManifest = {
         status: 'failed',
@@ -1077,6 +1086,7 @@ OUTPUT INSTRUCTIONS:
 
   // 6. Independently run acceptance_commands after worker
   const acceptanceResults = [];
+  timings.acceptance_ms = 0;
   let acceptanceAllPassed = true;
   recomputeScope();
   const workerScopeCheck = {passed:scopeViolations.length === 0 && scopeDeterministic, violations:[...scopeViolations]};
@@ -1110,6 +1120,7 @@ OUTPUT INSTRUCTIONS:
     const cmdArgs = commandSpec.args;
 
     const cmdStart = Date.now();
+    activeStage = 'acceptance';
     const cmdRun = spawnAcceptance(cmdExe, cmdArgs, {
       cwd: contract.workspace,
       encoding: 'utf-8',
@@ -1118,6 +1129,8 @@ OUTPUT INSTRUCTIONS:
       timeout: durationToMs(commandSpec.timeout)
     });
     const cmdDuration = Date.now() - cmdStart;
+    timings.acceptance_ms += cmdDuration;
+    activeStage = 'verification';
 
     const exitCode = cmdRun.status !== null ? cmdRun.status : -1;
     const passed = exitCode === 0;
@@ -1144,6 +1157,8 @@ OUTPUT INSTRUCTIONS:
       command: cmdStr,
       exit_code: exitCode,
       status: passed ? 'PASS' : 'FAIL',
+      duration_ms: cmdDuration,
+      process_error: cmdRun.error?.code || null,
       log_path: logPath
     });
   }
@@ -1185,18 +1200,26 @@ OUTPUT INSTRUCTIONS:
     : { files_changed: touchedFiles.length, insertions: 0, deletions: 0 };
 
   // 8. Write full receipt JSON artifact
-  const failureText = [agyRun.stderr || '', workerManifest?.summary || '',
-    ...(workerManifest?.uncertainties || [])].join(' ');
-  const failureCategory = overallStatus !== 'REJECTED' ? null
-    : preflight.status !== 'READY' ? 'environment'
+  let failureCategory = overallStatus !== 'REJECTED' ? null
+    : !workerDispatched ? 'environment'
     : agyRun.error?.code === 'ETIMEDOUT' ? 'timeout'
-    : /sign.in|unauthenticated|token exchange|authentication.*(required|failed)/i.test(failureText) ? 'auth'
-    : /unknown model|model.*not.*available|model.*not.*found/i.test(failureText) ? 'model'
-    : !agySuccess ? 'worker' : 'verification';
+    : !agySuccess || !manifestCompleted ? 'worker' : 'verification';
+  const diagnostic = diagnose({preflightRun,preflight,workerRun:agyRun,workerParsed:agyParsed,workerManifest,outputValid,
+    workerSuccess:agySuccess && manifestCompleted,status:overallStatus,acceptance:acceptanceResults,scopePassed,
+    artifactsPassed:artifactCheck.passed && workerArtifactCheck.passed});
+  if(diagnostic?.code==='AUTH_FAILED') failureCategory='auth';
+  if(diagnostic?.code==='MODEL_UNAVAILABLE') failureCategory='model';
+  timings.verification_ms = Math.max(0,Date.now()-verificationStart-timings.acceptance_ms);
+  timings.total_before_receipt_ms = Date.now()-startTime;
+  activeStage = 'receipt';
   const receiptArtifactPath = path.join(artifactDir, 'receipt.json');
   const fullReceipt = {
     version: 'v1',
-    runner_version: '2.0.0',
+    runner_version: VERSION,
+    diagnostic,
+    timings,
+    worker_dispatched: workerDispatched,
+    contract_snapshot: structuredClone(contract),
     retry_claim_path: retryClaim,
     workspace,
     retry_count: retryCount,
@@ -1233,6 +1256,7 @@ OUTPUT INSTRUCTIONS:
     artifacts: {
       attempt_dir: artifactDir,
       raw_agy_output: rawAgyArtifactPath,
+      raw_preflight_output: rawPreflightPath,
       worker_manifest: path.join(artifactDir, 'worker-manifest.json'),
       receipt: receiptArtifactPath,
       acceptance_logs: acceptanceResults.map(r => r.log_path)
@@ -1243,7 +1267,8 @@ OUTPUT INSTRUCTIONS:
     needs_review: needsReview
   };
 
-  writeArtifact(receiptArtifactPath, JSON.stringify(fullReceipt, null, 2), 'utf-8');
+  const receiptJson = JSON.stringify(fullReceipt, null, 2);
+  writeArtifact(receiptArtifactPath, receiptJson, 'utf-8');
   const latestReceiptPath = path.join(artifactBaseDir, 'latest.json');
   writeArtifact(latestReceiptPath, JSON.stringify({
     task_id: contract.task_id,
@@ -1257,6 +1282,12 @@ OUTPUT INSTRUCTIONS:
   appendTelemetry({
     timestamp: new Date().toISOString(),
     event_type: 'execution',
+    retry_count: retryCount,
+    runner_version: VERSION,
+    receipt_sha256: crypto.createHash('sha256').update(receiptJson).digest('hex'),
+    diagnostic,
+    timings,
+    worker_dispatched:workerDispatched,
     task_id: contract.task_id,
     attempt_id: attemptId,
     task_type: contract.task_type,
@@ -1290,6 +1321,9 @@ OUTPUT INSTRUCTIONS:
     log_path: truncateText(result.log_path, 500)
   }));
   const compactReceipt = {
+    diagnostic,
+    timings,
+    worker_dispatched:workerDispatched,
     task_id: contract.task_id,
     attempt_id: attemptId,
     status: overallStatus,
@@ -1316,6 +1350,8 @@ OUTPUT INSTRUCTIONS:
   };
 
   emitCompactReceipt(compactReceipt, {
+    diagnostic,
+    worker_dispatched:workerDispatched,
     task_id: contract.task_id,
     attempt_id: attemptId,
     status: overallStatus,
@@ -1327,8 +1363,11 @@ OUTPUT INSTRUCTIONS:
 }
 
 if (process.argv[1] && normalizePath(process.argv[1]) === normalizePath(__filename)) main().finally(() => {
-  if (releaseLease) releaseLease();
+  if (releaseLease) {
+    try { releaseLease(); } catch (error) { activeStage = 'coordination'; throw error; }
+  }
 }).catch(err => {
+  process.stderr.write(JSON.stringify({diagnostic:diagnoseFatal(activeStage,err)})+'\n');
   process.stderr.write(`Fatal error: ${err.stack || err.message}\n`);
   process.exitCode = 1;
 });

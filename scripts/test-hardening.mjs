@@ -6,6 +6,7 @@ import assert from 'node:assert/strict';
 import {spawnSync} from 'node:child_process';
 import {fileURLToPath} from 'node:url';
 import {fileDigest} from './integrity.mjs';
+import {buildRetry} from './prepare-retry.mjs';
 
 const scripts = path.dirname(fileURLToPath(import.meta.url));
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'agy-hardening-'));
@@ -31,7 +32,7 @@ function fixture() {
 }
 function run(c, action='OK', extra={}) {
   const contract=path.join(root,'contract-'+serial+'.json'); fs.writeFileSync(contract,JSON.stringify(c));
-  const r=spawnSync(process.execPath,[path.join(scripts,'invoke-agy-task.mjs'),'--contract',contract,'--agy-path',path.join(root,'fake.ps1')],
+  const r=spawnSync(process.execPath,[path.join(scripts,'agy-worker.mjs'),'run','--contract',contract,'--agy-path',path.join(root,'fake.ps1')],
     {encoding:'utf8',windowsHide:true,timeout:60000,env:{...process.env,AGY_HARDENING_ACTION:action,...extra}});
   let receipt;try{receipt=JSON.parse(r.stdout);}catch{}
   return {...r,receipt,full:receipt?.receipt_path?JSON.parse(fs.readFileSync(receipt.receipt_path,'utf8')):null};
@@ -41,7 +42,8 @@ try {
  process.env.AGY_TELEMETRY_PATH=path.join(root,'telemetry.jsonl');
  process.env.AGY_PREFLIGHT_CACHE=path.join(root,'preflight');
  process.env.AGY_STATE_DIR=path.join(root,'state');
- fs.writeFileSync(path.join(root,'fake.mjs'),fake);
+ const failureFake="if(['AUTH','MODEL'].includes(process.env.AGY_HARDENING_ACTION)){console.log(JSON.stringify({status:'FAILED',conversation_id:'fake-conversation',response:(process.env.AGY_HARDENING_ACTION==='AUTH'?'token exchange failed':'unknown model')+' PRIVATE_FAILURE_MARKER'}));process.exit(7);}\n";
+ fs.writeFileSync(path.join(root,'fake.mjs'),failureFake+fake);
  fs.writeFileSync(path.join(root,'fake.ps1'),'& node "$PSScriptRoot/fake.mjs" @args\n');
  let c=fixture();
  const sentinel=path.join(c.workspace,'test-executed.txt');
@@ -59,7 +61,18 @@ try {
  r=run(c);
  output('acceptance side effect prevents subsequent command',()=>{assert.equal(r.status,3);assert.equal(r.receipt.acceptance_results[1].status,'SKIP');assert.ok(!fs.existsSync(second));});
  c=fixture();r=run(c,'UNAUTHORIZED',{HTTPS_PROXY:'http://127.0.0.1:1',HTTP_PROXY:'http://127.0.0.1:1',ALL_PROXY:'http://127.0.0.1:1'});
- output('failed proxy preflight stops worker',()=>{assert.equal(r.status,3,r.stderr);assert.equal(r.full.failure_category,'environment');assert.ok(!fs.existsSync(path.join(c.workspace,'illegal.txt')));});
+ output('failed proxy preflight stops worker',()=>{assert.equal(r.status,3,r.stderr);assert.equal(r.full.failure_category,'environment');assert.ok(!fs.existsSync(path.join(c.workspace,'illegal.txt')));
+ assert.equal(r.full.diagnostic.code,'PROXY_UNREACHABLE');assert.equal(r.receipt.worker_dispatched,false);
+ assert.equal(r.full.timings.worker_ms,0);assert.ok(fs.existsSync(r.full.artifacts.raw_preflight_output));});
+ for(const [action,code,category] of [['AUTH','AUTH_FAILED','auth'],['MODEL','MODEL_UNAVAILABLE','model']]) {
+ c=fixture();r=run(c,action);
+ output('nonzero CLI preserves structured failure evidence '+action,()=>{
+ assert.equal(r.status,3,r.stderr);assert.equal(r.receipt.diagnostic.code,code);assert.equal(r.full.failure_category,category);
+ assert.ok(!r.stdout.includes('PRIVATE_FAILURE_MARKER'));
+ const raw=JSON.parse(fs.readFileSync(r.full.artifacts.raw_agy_output,'utf8'));assert.ok(raw.stdout.includes('PRIVATE_FAILURE_MARKER'));
+ assert.throws(()=>buildRetry(r.full,r.receipt.receipt_path,'Try again'),/takeover/);
+ });
+ }
  c=fixture();git(c.workspace,'update-index','--assume-unchanged','source.txt');
  r=run(c,'HIDDEN');
  output('assume-unchanged content modification detected',()=>{assert.equal(r.status,3,r.stderr);assert.ok(r.receipt.scope_check.touched_files.includes('source.txt'));});
@@ -76,16 +89,33 @@ try {
  output('required deliverable cannot be omitted',()=>{assert.equal(r.status,3,r.stderr);});
  c=fixture();fs.renameSync(path.join(c.workspace,'.git'),path.join(root,'saved-git-'+serial));c.required_artifacts=['report.md'];r=run(c,'OK');
  output('missing artifact cannot downgrade to needs-review outside Git',()=>{assert.equal(r.status,3,r.stderr);assert.equal(r.receipt.status,'REJECTED');});
+ c=fixture();fs.renameSync(path.join(c.workspace,'.git'),path.join(root,'saved-git-'+serial));r=run(c);
+ output('unified entrypoint preserves needs-review exit code',()=>{assert.equal(r.status,2,r.stderr);assert.equal(r.receipt.status,'NEEDS_REVIEW');});
  c=fixture();c.required_artifacts=['report.md'];c.restrict_tools=true;r=run(c,'RESTRICT');
  output('restricted tools pass through and artifact verified',()=>{assert.equal(r.status,0,r.stderr);assert.equal(r.full.artifact_check.passed,true);});
- const review=()=>spawnSync(process.execPath,[path.join(scripts,'record-review.mjs'),'--receipt',r.receipt.receipt_path,'--verdict','pass'],{encoding:'utf8',windowsHide:true});
+ const review=()=>spawnSync(process.execPath,[path.join(scripts,'agy-worker.mjs'),'review','--receipt',r.receipt.receipt_path,'--verdict','pass'],{encoding:'utf8',windowsHide:true});
  output('review binds to exact attempt',()=>{const v=review();assert.equal(v.status,0,v.stderr);assert.equal(JSON.parse(v.stdout).attempt_id,r.receipt.attempt_id);});
+ output('unified statistics binds review to execution receipt hash',()=>{
+ const stats=spawnSync(process.execPath,[path.join(scripts,'agy-worker.mjs'),'stats'],{encoding:'utf8',windowsHide:true});
+ assert.equal(stats.status,0,stats.stderr);const report=JSON.parse(stats.stdout);
+ assert.equal(report.overall.matched_reviews,1);assert.equal(report.overall.review_verdicts.pass,1);
+ assert.equal(report.overall.legacy_unbound_reviews,0);
+ });
  fs.appendFileSync(path.join(r.full.artifacts.attempt_dir,'report.md'),'modified');
  output('stale artifact review rejected',()=>{assert.equal(review().status,1);});
  c=fixture();c.task_type='documentation';c.task_details='Audience: beginners';c.required_artifacts=['report.md'];r=run(c,'TEMPLATE');
  output('task-specific guidance reaches worker',()=>{assert.equal(r.status,0,r.stderr);});
  c=fixture();r=run(c);
- c.retry_of=r.receipt.receipt_path;c.conversation_id=r.receipt.conversation_id;
+ output('V2.1 receipt exposes bounded timings and snapshot',()=>{
+ assert.equal(r.full.runner_version,'2.2.0');assert.equal(r.receipt.diagnostic,null);assert.equal(r.receipt.worker_dispatched,true);
+ for(const value of Object.values(r.full.timings)) assert.ok(Number.isFinite(value)&&value>=0);
+ assert.equal(r.full.contract_snapshot.goal,c.goal);assert.equal(r.receipt.contract_snapshot,undefined);});
+ const feedback=path.join(root,'feedback.txt'),retryFile=path.join(root,'retry.json');
+ fs.writeFileSync(feedback,'Verify the same source once more.');
+ const prepared=spawnSync(process.execPath,[path.join(scripts,'agy-worker.mjs'),'retry','--receipt',r.receipt.receipt_path,
+   '--feedback-file',feedback,'--out',retryFile],{encoding:'utf8',windowsHide:true});
+ assert.equal(prepared.status,0,prepared.stderr);assert.equal(JSON.parse(prepared.stdout).consumes_retry,false);
+ c=JSON.parse(fs.readFileSync(retryFile,'utf8'));
  const originalRetryParent=c.retry_of;
  r=run(c);
  output('one exact retry is allowed',()=>{assert.equal(r.status,0,r.stderr);assert.equal(r.full.retry_count,1);});
@@ -100,7 +130,7 @@ try {
  c=fixture();r=run(c);r=run(c);
  output('local CLI preflight cache is reused',()=>{assert.equal(r.status,0,r.stderr);assert.equal(r.full.preflight.cache_hit,true);});
  c=fixture();c.timeout='5s';r=run(c,'TREE');
- output('worker timeout reports rejection',()=>{assert.equal(r.status,3,r.stderr);assert.equal(r.full.failure_category,'timeout');assert.ok(fs.existsSync(path.join(c.workspace,'started.txt')));});
+ output('worker timeout reports rejection',()=>{assert.equal(r.status,3,r.stderr);assert.equal(r.full.failure_category,'timeout');assert.equal(r.receipt.diagnostic.code,'WORKER_TIMEOUT');assert.ok(fs.existsSync(path.join(c.workspace,'started.txt')));});
  await new Promise(resolve=>setTimeout(resolve,9000));
  output('timed-out detached child cannot write later',()=>{assert.ok(!fs.existsSync(path.join(c.workspace,'late.txt')));});
  c=fixture();const childStarted=path.join(c.workspace,'started.txt');const late=path.join(c.workspace,'late.txt');
@@ -108,7 +138,7 @@ try {
  const parentCode='require("child_process").spawn(process.execPath,["-e",'+JSON.stringify(childCode)+'],{detached:true,stdio:"ignore"}).unref();require("fs").writeFileSync('+JSON.stringify(childStarted)+',"started");setInterval(()=>{},1000)';
  c.acceptance_commands=[{executable:process.execPath,args:['-e',parentCode],timeout:'5s'}];
  r=run(c);
- output('acceptance timeout is a failure',()=>{assert.equal(r.status,3);assert.equal(r.receipt.acceptance_results[0].status,'FAIL');assert.ok(fs.existsSync(childStarted));});
+ output('acceptance timeout is a failure',()=>{assert.equal(r.status,3);assert.equal(r.receipt.acceptance_results[0].status,'FAIL');assert.equal(r.receipt.diagnostic.code,'ACCEPTANCE_TIMEOUT');assert.ok(r.full.timings.acceptance_ms>=5000);assert.ok(fs.existsSync(childStarted));});
  await new Promise(resolve=>setTimeout(resolve,9000));
  output('timed-out acceptance child cannot write later',()=>assert.ok(!fs.existsSync(late)));
  const hard=path.join(c.workspace,'hard.txt');

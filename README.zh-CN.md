@@ -6,7 +6,32 @@
 
 这个项目由一个 Codex Skill 和一个确定性的 PowerShell 包装脚本组成。它**不是** OpenAI 兼容反向代理，也不会把 Gemini 添加到 Codex 的模型选择器中。
 
-## V2：少写参数，补齐执行协调
+## V2.2：统一入口，统计不自嗨
+
+现在用 `node scripts/agy-worker.mjs` 加 `prepare`、`run`、`retry`、`state`、`review` 或 `stats` 即可。旧脚本继续兼容，不额外安装全局命令或依赖，也不需要重新登录。只有 `run` 会启动 Gemini；`retry` 只是生成契约，`review --verdict retry` 只是记录决定，都不会自动执行重试。
+
+```powershell
+node scripts/agy-worker.mjs --help
+node scripts/agy-worker.mjs stats --since 2026-09-01 --task-type documentation
+```
+
+统计直接读取现有本地遥测，分开显示机器检查结果、Codex 审核结果、审核覆盖情况、耗时、已报告的 token 样本和重试次数。缺数据就是未知，不按零处理。V2.2 执行记录增加回执哈希，审核记录必须匹配；旧记录缺少哈希则单列，不混进已核对的通过率。报告不打印 prompt、审稿备注或任务标识，不改设置，也不瞎算省了多少钱、多少 GPT token。筛选口径、重复/冲突处理和 32 MiB 读取上限详见[统一入口与统计说明](references/usage-and-stats.md)。
+
+默认仍为 Flash High，权限和一次重试上限不变，Windows 进程监管也保持原链路。新增测试命令 `node --test scripts/test-v22.mjs`，与已有测试一起运行。
+
+## V2.1 基础：故障说清楚，重试少填表
+
+Runner 2.1 保留 `v1` 契约和 V2 执行协调。精简回执增加故障阶段、原因码、下一步建议和分段耗时，区分预检、worker、验收与文件核验的问题。完整预检日志和契约快照保存在本地 attempt 目录，不把原始长输出回灌给 Codex。登录或模型问题若来自错误文本匹配，只是诊断线索，不是假装拿到了上游的确定错误类型。
+
+文稿或代码存在语义问题时，先把具体纠正意见存成 UTF-8 文本，再生成同范围重试契约：
+
+```powershell
+node scripts/prepare-retry.mjs --receipt "C:/tasks/attempt/receipt.json" --feedback-file "C:/tasks/correction.txt" --out "C:/tasks/retry.json"
+```
+
+Codex 检查生成结果后，再交给原来的契约 runner 执行。助手保留模型、权限、范围、超时和验收命令；生成阶段不调用 Gemini，也不占用或预留重试名额。缺少 V2.1 快照、名额耗尽、登录/环境/模型故障及覆盖已有输出都会被拒绝。真正执行时仍检查一次重试上限，不增加自动修登录、改代理、换模型或浏览器委托。详见[诊断与重试说明](references/contract-runner.md#v21-diagnostics-and-retry-preparation)。新增测试命令为 `node --test scripts/test-v21.mjs`，与 V2、回归和加固测试一起运行。
+
+## V2 基础：少写参数，补齐执行协调
 
 Runner 升级为 2.0，但仍兼容 `version: "v1"` 契约。新任务可用 `scripts/prepare-task.mjs` 把简短 JSON 任务说明展开为完整契约，不调用 Gemini、不改项目设置、不覆盖已有契约。[SKILL.md](SKILL.md) 提供示例，[完整契约参考](references/contract-runner.md) 保留高级参数。
 
