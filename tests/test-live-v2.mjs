@@ -33,7 +33,7 @@ try{
   if(run.status!==0) throw new Error('Live run failed: '+run.status+' '+run.stderr+' '+run.stdout);
   const compact=JSON.parse(run.stdout);
   const receipt=JSON.parse(fs.readFileSync(compact.receipt_path,'utf8'));
-  assert.equal(receipt.runner_version,'2.2.0');
+  assert.equal(receipt.runner_version,'3.1.0');
   assert.equal(compact.diagnostic,null);
   assert.equal(compact.worker_dispatched,true);
   assert.ok(receipt.timings.worker_ms>0);

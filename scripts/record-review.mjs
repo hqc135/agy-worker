@@ -3,6 +3,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { digest, fileDigest } from './integrity.mjs';
+import {stateContext} from './task-lifecycle.mjs';
+import {journalPath,readJournal,saveJournal} from './attempt-journal.mjs';
 
 function parseArgs(args) {
   const parsed = {};
@@ -62,7 +64,8 @@ try {
   if (args.verdict.toLowerCase() === 'pass') {
     if (!['READY_FOR_REVIEW','NEEDS_REVIEW'].includes(receipt.status))
       throw new Error('A rejected attempt cannot be marked pass.');
-    for (const [file, expected] of Object.entries({...receipt.review_files, ...receipt.artifact_check.hashes})) {
+    for (const [file, expected] of Object.entries({...receipt.review_files, ...receipt.artifact_check.hashes,...receipt.review_evidence,
+      ...(receipt.contract_snapshot?.material_pack?{[receipt.artifacts?.material_evidence]:receipt.contract_snapshot.material_pack.sha256}:{})})) {
       if (!expected || fileDigest(file, receipt.workspace) !== expected)
         throw new Error('Reviewed file changed since receipt: ' + file);
     }
@@ -104,6 +107,15 @@ try {
     fs.mkdirSync(telemetryDir, { recursive: true });
   }
   fs.appendFileSync(telemetryPath, JSON.stringify(telemetryEvent) + '\n', 'utf-8');
+  if(receipt.journal_path){
+    try{
+      const expected=journalPath(stateContext(receipt.workspace),receipt.attempt_id);
+      if(path.resolve(receipt.journal_path)!==expected)throw new Error('Journal path mismatch.');
+      const j=readJournal(expected);
+      if(j.receipt_sha256!==digest(receiptBytes)||j.attempt_id!==receipt.attempt_id)throw new Error('Journal receipt mismatch.');
+      saveJournal(expected,{...j,review:{verdict,at:telemetryEvent.timestamp,receipt_sha256:digest(receiptBytes)}});
+    }catch{process.stderr.write('Review recorded in telemetry; journal review update unavailable.\n');}
+  }
 
   process.stdout.write(JSON.stringify({
     recorded: true,

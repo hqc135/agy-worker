@@ -12,9 +12,11 @@ Use the official `agy` CLI as a junior worker. Keep Codex responsible for scope,
 
 ---
 
-## Primary Route: V1 Task Contract Runner (implementation 2.2)
+## Primary Route: V1 Task Contract Runner (implementation 3.1)
 
 Prefer the deterministic V1 contract runner for all implementation, mechanical edit, documentation, and test generation chores.
+
+V3.0 adds optional pinned `material_pack` evidence and bounded review summaries; V3.1 adds external attempt journals and read-only handoff. See [materials-and-handoff.md](materials-and-handoff.md) for preparation, limits, review and interruption behavior. Old contracts remain supported.
 
 ### 1. Create a V1 Task Contract JSON
 

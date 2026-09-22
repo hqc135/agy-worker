@@ -4,6 +4,7 @@ import path from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {validateContract} from './invoke-agy-task.mjs';
 import {stateContext, retryClaimPath} from './task-lifecycle.mjs';
+import {loadPack} from './material-pack.mjs';
 
 export function buildRetry(receipt, receiptPath, feedback) {
   if(!receipt || !receipt.contract_snapshot || !receipt.contract_scope?.mode)
@@ -18,6 +19,7 @@ export function buildRetry(receipt, receiptPath, feedback) {
   if(typeof feedback!=='string' || !feedback.trim()) throw new Error('Non-empty correction feedback is required.');
   const original=structuredClone(receipt.contract_snapshot);
   validateContract(original);
+  if(original.material_pack)loadPack(original.material_pack,original.workspace);
   const scope={
     allowed_files:original.allowed_files,read_scope:original.read_scope,max_changed_files:original.max_changed_files,
     model:original.model || 'gemini-3.8-flash-high',restrict_tools:original.restrict_tools || false,

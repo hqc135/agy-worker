@@ -30,6 +30,9 @@ jobs:
       - name: V2.2 unified entrypoint and statistics tests
         shell: pwsh
         run: node --test ./scripts/test-v22.mjs
+      - name: V3 material, review and handoff tests
+        shell: pwsh
+        run: node --test ./scripts/test-v3.mjs
       - name: Integrity and process lifecycle tests
         shell: pwsh
         run: node ./scripts/test-hardening.mjs

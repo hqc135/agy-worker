@@ -6,7 +6,17 @@ Delegate small, verifiable coding chores from Codex to Google's official Antigra
 
 This project is a Codex Skill and a deterministic PowerShell wrapper. It is **not** an OpenAI-compatible reverse proxy and it does not add Gemini to the Codex model picker.
 
-## V2.2: one entrypoint and honest local statistics
+## V3.0 + V3.1: explicit materials, focused review, interruption handoff
+
+Release **3.1.0** includes both iterations and remains compatible with old v1 contracts. No new login, model switch or permission change is required.
+
+- `pack --spec <sources.json> --out <pack.json>` collects explicit UTF-8 files/line ranges into pinned evidence, with full-source hashes and freshness checks. Common credential paths/patterns are blocked heuristically; this is not a secret-scanning guarantee or sandbox.
+- `inspect --receipt <receipt.json>` returns bounded objective file/test evidence and a tracked diff reference, distinguishes stale materials from damaged copies, and labels worker claims separately. It does not replace editorial/factual review.
+- `handoff --workspace <path> --attempt <id>` reads durable checkpoints, lock/claim presence and receipt state after interruption. It never resumes Gemini, clears locks or replenishes retries; process liveness remains unknown.
+
+Use these through `node scripts/agy-worker.mjs`. Materials are optional, existing commands remain supported, and only `run` invokes Gemini. Full examples, size limits, crash-window handling and caveats are in [materials and handoff](references/materials-and-handoff.md). V3.2 benchmarking/net savings analysis is not included.
+
+## V2.2 foundation: one entrypoint and honest local statistics
 
 Use `node scripts/agy-worker.mjs` with `prepare`, `run`, `retry`, `state`, `review`, or `stats`. The existing scripts remain compatible; no global command, new dependency or account setup is required. Only `run` starts Gemini. `retry` prepares a contract and `review --verdict retry` records a decision; neither executes a retry.
 

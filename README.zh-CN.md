@@ -6,7 +6,17 @@
 
 这个项目由一个 Codex Skill 和一个确定性的 PowerShell 包装脚本组成。它**不是** OpenAI 兼容反向代理，也不会把 Gemini 添加到 Codex 的模型选择器中。
 
-## V2.2：统一入口，统计不自嗨
+## V3.0 + V3.1：材料交清楚，结果好验收，中断能接手
+
+本次发布 **3.1.0**，包含两个迭代，继续兼容旧 `v1` 契约。不需要重新登录，不改默认模型或权限。
+
+- `pack --spec <sources.json> --out <pack.json>`：收集明确指定的 UTF-8 文件和行范围，保存全文哈希、来源和时间；执行前核对材料是否过期。常见敏感路径/内容会被启发式阻止，但不能把它当作完整保密扫描或沙箱。
+- `inspect --receipt <receipt.json>`：按需查看文件哈希、大小/行数、测试结果和 tracked diff 路径；区分来源过期与材料副本损坏。Gemini 自述单独标记，不冒充事实核验或文稿质量评分。
+- `handoff --workspace <路径> --attempt <编号>`：读取中断前的阶段、锁、重试占用和回执状态。不会自动续跑、清锁或重置次数，也不会假称进程已经退出。
+
+统一通过 `node scripts/agy-worker.mjs` 使用，材料包是可选项，旧命令继续有效，只有 `run` 调用 Gemini。示例、大小限制、中断窗口与注意事项见[材料与交接说明](references/materials-and-handoff.md)。这次不包含 V3.2 的收益评测，不宣称已经测出节省 GPT token 的比例。
+
+## V2.2 基础：统一入口，统计不自嗨
 
 现在用 `node scripts/agy-worker.mjs` 加 `prepare`、`run`、`retry`、`state`、`review` 或 `stats` 即可。旧脚本继续兼容，不额外安装全局命令或依赖，也不需要重新登录。只有 `run` 会启动 Gemini；`retry` 只是生成契约，`review --verdict retry` 只是记录决定，都不会自动执行重试。
 

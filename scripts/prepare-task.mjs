@@ -8,7 +8,7 @@ import {validateContract} from './invoke-agy-task.mjs';
 export function prepareContract(brief) {
   if (!brief || typeof brief !== 'object' || Array.isArray(brief)) throw new Error('Brief must be a JSON object.');
   const fields = ['workspace','task_id','task_type','goal','allowed_files','read_scope','acceptance_commands',
-    'forbidden_actions','max_changed_files','required_artifacts','task_details','model','timeout','acceptance_timeout','restrict_tools','mode'];
+    'forbidden_actions','max_changed_files','required_artifacts','task_details','model','timeout','acceptance_timeout','restrict_tools','mode','material_pack'];
   for (const key of Object.keys(brief)) if (!fields.includes(key)) throw new Error('Unknown brief field: ' + key);
   if (typeof brief.workspace !== 'string' || !path.isAbsolute(brief.workspace)) throw new Error('Brief workspace must be absolute.');
   const workspace = fs.realpathSync.native(brief.workspace);

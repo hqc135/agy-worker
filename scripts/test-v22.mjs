@@ -56,7 +56,7 @@ test('filters apply to execution cohort and retain later review; output omits ra
   assert.equal(result.overall.reported_total_tokens.total,42);assert.ok(!JSON.stringify(result).includes(marker));
 });
 test('unified help, version and invalid commands never dispatch and preserve errors',()=>{
-  assert.equal(run(['--version']).stdout.trim(),'2.2.0');
+  assert.equal(run(['--version']).stdout.trim(),'3.1.0');
   assert.match(run(['--help']).stdout,/Prepare only/);
   for(const cmd of ['__proto__','constructor','../invoke-agy-task.mjs']) assert.throws(()=>resolveCommand(cmd),/Unknown command/);
   assert.equal(run(['unknown']).status,1);assert.equal(run(['run']).status,1);

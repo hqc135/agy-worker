@@ -4,6 +4,12 @@
   "description": "Schema for Antigravity V1 Task Contract",
   "type": "object",
   "properties": {
+    "material_pack": {
+      "type":"object",
+      "properties":{"path":{"type":"string","minLength":1},"sha256":{"type":"string","pattern":"^[a-f0-9]{64}$"}},
+      "required":["path","sha256"],"additionalProperties":false,
+      "description":"Optional pinned local material pack; checked for stale sources before dispatch."
+    },
     "version": {
       "type": "string",
       "enum": [

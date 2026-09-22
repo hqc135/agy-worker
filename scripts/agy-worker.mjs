@@ -5,7 +5,8 @@ import {VERSION} from './version.mjs';
 
 const commands = Object.freeze({
   prepare:'prepare-task.mjs', run:'invoke-agy-task.mjs', retry:'prepare-retry.mjs',
-  state:'task-state.mjs', review:'record-review.mjs', stats:'task-stats.mjs'
+  state:'task-state.mjs', review:'record-review.mjs', stats:'task-stats.mjs',
+  pack:'material-pack.mjs', inspect:'review-pack.mjs', handoff:'handoff.mjs'
 });
 export function resolveCommand(command) {
   if (!Object.hasOwn(commands,command)) throw new Error('Unknown command. Use --help.');
@@ -14,6 +15,9 @@ export function resolveCommand(command) {
 const help = `AGY Worker ${VERSION}
 Usage: node agy-worker.mjs <command> <arguments>
 
+  pack --spec <sources.json> --out <pack.json>            Collect explicit local evidence
+  inspect --receipt <receipt.json>                       Read bounded review summary
+  handoff --workspace <directory> --attempt <attempt-id>  Read interruption evidence; no resume
   prepare --brief <brief.json> --out <contract.json>       Prepare only
   run --contract <contract.json> [--agy-path <CLI>]       Executes Gemini
   retry --receipt <receipt.json> --feedback-file <txt> --out <retry.json>

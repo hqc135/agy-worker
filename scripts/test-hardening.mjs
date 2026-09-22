@@ -7,6 +7,8 @@ import {spawnSync} from 'node:child_process';
 import {fileURLToPath} from 'node:url';
 import {fileDigest} from './integrity.mjs';
 import {buildRetry} from './prepare-retry.mjs';
+import {buildPack} from './material-pack.mjs';
+import {digest} from './integrity.mjs';
 
 const scripts = path.dirname(fileURLToPath(import.meta.url));
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'agy-hardening-'));
@@ -43,7 +45,7 @@ try {
  process.env.AGY_PREFLIGHT_CACHE=path.join(root,'preflight');
  process.env.AGY_STATE_DIR=path.join(root,'state');
  const failureFake="if(['AUTH','MODEL'].includes(process.env.AGY_HARDENING_ACTION)){console.log(JSON.stringify({status:'FAILED',conversation_id:'fake-conversation',response:(process.env.AGY_HARDENING_ACTION==='AUTH'?'token exchange failed':'unknown model')+' PRIVATE_FAILURE_MARKER'}));process.exit(7);}\n";
- fs.writeFileSync(path.join(root,'fake.mjs'),failureFake+fake);
+ fs.writeFileSync(path.join(root,'fake.mjs'),failureFake+fake.replace('const artifacts=[];',"const artifacts=[];if(action==='MATERIAL_TAMPER')fs.writeFileSync(path.join(attempt,'material-evidence.json'),'tampered');"));
  fs.writeFileSync(path.join(root,'fake.ps1'),'& node "$PSScriptRoot/fake.mjs" @args\n');
  let c=fixture();
  const sentinel=path.join(c.workspace,'test-executed.txt');
@@ -107,7 +109,8 @@ try {
  output('task-specific guidance reaches worker',()=>{assert.equal(r.status,0,r.stderr);});
  c=fixture();r=run(c);
  output('V2.1 receipt exposes bounded timings and snapshot',()=>{
- assert.equal(r.full.runner_version,'2.2.0');assert.equal(r.receipt.diagnostic,null);assert.equal(r.receipt.worker_dispatched,true);
+ assert.equal(r.full.runner_version,'3.1.0');assert.equal(r.receipt.diagnostic,null);assert.equal(r.receipt.worker_dispatched,true);
+ assert.ok(fs.existsSync(r.receipt.review_pack_path));assert.ok(fs.existsSync(r.receipt.journal_path));
  for(const value of Object.values(r.full.timings)) assert.ok(Number.isFinite(value)&&value>=0);
  assert.equal(r.full.contract_snapshot.goal,c.goal);assert.equal(r.receipt.contract_snapshot,undefined);});
  const feedback=path.join(root,'feedback.txt'),retryFile=path.join(root,'retry.json');
@@ -129,6 +132,25 @@ try {
  output('retry cannot change execution mode',()=>{assert.equal(r.status,1);assert.match(r.stderr,/may not change scope/);});
  c=fixture();r=run(c);r=run(c);
  output('local CLI preflight cache is reused',()=>{assert.equal(r.status,0,r.stderr);assert.equal(r.full.preflight.cache_hit,true);});
+ const withPack=c=>{
+ const pack=buildPack({workspace:c.workspace,sources:[{path:'source.txt'}]}),raw=JSON.stringify(pack),file=path.join(root,'pack-'+serial+'.json');
+ fs.writeFileSync(file,raw);return {...c,material_pack:{path:file,sha256:digest(raw)}};
+ };
+ c=withPack(fixture());r=run(c);
+ output('material pack runs and current inspect/handoff are read-only',()=>{
+ assert.equal(r.status,0,r.stderr);
+ const inspect=spawnSync(process.execPath,[path.join(scripts,'agy-worker.mjs'),'inspect','--receipt',r.receipt.receipt_path],{encoding:'utf8',windowsHide:true});
+ assert.equal(inspect.status,0,inspect.stderr);assert.equal(JSON.parse(inspect.stdout).material_copy,'hash_matched');assert.equal(JSON.parse(inspect.stdout).material_check,'current');
+ const handoff=spawnSync(process.execPath,[path.join(scripts,'agy-worker.mjs'),'handoff','--workspace',c.workspace,'--attempt',r.receipt.attempt_id],{encoding:'utf8',windowsHide:true});
+ assert.equal(handoff.status,0,handoff.stderr);assert.equal(JSON.parse(handoff.stdout).receipt_check,'hash_matched');
+ });
+ const alternative=path.join(root,'alternative-pack.json');fs.copyFileSync(c.material_pack.path,alternative);
+ const mismatch=run({...c,retry_of:r.receipt.receipt_path,conversation_id:r.receipt.conversation_id,material_pack:{...c.material_pack,path:alternative}});
+ output('retry cannot swap material pack even when content matches',()=>{assert.equal(mismatch.status,1);assert.match(mismatch.stderr,/pinned material/);});
+ fs.appendFileSync(path.join(c.workspace,'source.txt'),'changed');r=run(c,'UNAUTHORIZED');
+ output('stale material stops dispatch',()=>{assert.equal(r.status,1,r.stderr);assert.match(r.stderr,/stale/);assert.ok(!fs.existsSync(path.join(c.workspace,'illegal.txt')));});
+ c=withPack(fixture());r=run(c,'MATERIAL_TAMPER');
+ output('worker cannot tamper pinned evidence',()=>{assert.equal(r.status,3,r.stderr);assert.match(r.full.scope_check.violations.join(' '),/material evidence/);});
  c=fixture();c.timeout='5s';r=run(c,'TREE');
  output('worker timeout reports rejection',()=>{assert.equal(r.status,3,r.stderr);assert.equal(r.full.failure_category,'timeout');assert.equal(r.receipt.diagnostic.code,'WORKER_TIMEOUT');assert.ok(fs.existsSync(path.join(c.workspace,'started.txt')));});
  await new Promise(resolve=>setTimeout(resolve,9000));
